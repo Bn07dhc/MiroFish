@@ -528,9 +528,128 @@ class TwitterSimulationRunner:
         
         return active_agents
     
+    def _select_weighted_action(self, agent) -> Any:
+        """Select action based on configured weights, or default LLMAction"""
+        layered = self.config.get("layered_spec", {})
+        weights = layered.get("dynamics", {}).get("action_weights")
+
+        if not weights:
+            return LLMAction()
+
+        # Build weighted choices
+        action_map = {
+            "like_post": ActionType.LIKE_POST,
+            "comment": ActionType.CREATE_COMMENT if hasattr(ActionType, 'CREATE_COMMENT') else None,
+            "create_post": ActionType.CREATE_POST,
+            "quote_post": ActionType.QUOTE_POST,
+            "repost": ActionType.REPOST,
+            "follow": ActionType.FOLLOW,
+            "do_nothing": ActionType.DO_NOTHING,
+        }
+
+        choices = []
+        probs = []
+        for key, action_type in action_map.items():
+            if action_type is None:
+                continue
+            w = weights.get(key, 0)
+            if w > 0:
+                choices.append(action_type)
+                probs.append(w)
+
+        if not choices:
+            return LLMAction()
+
+        # Normalize probabilities
+        total = sum(probs)
+        probs = [p / total for p in probs]
+
+        # Select action type
+        selected = random.choices(choices, weights=probs, k=1)[0]
+
+        # For content-generating actions (CREATE_POST, QUOTE_POST, CREATE_COMMENT), use LLM
+        content_actions = {ActionType.CREATE_POST, ActionType.QUOTE_POST}
+        if hasattr(ActionType, 'CREATE_COMMENT'):
+            content_actions.add(ActionType.CREATE_COMMENT)
+
+        if selected in content_actions:
+            return LLMAction()  # LLM generates content
+        else:
+            return ManualAction(action_type=selected, action_args={})
+
+    def _get_phase_prompt(self, round_num: int) -> Optional[str]:
+        """Get phase-specific prompt injection for this round"""
+        layered = self.config.get("layered_spec", {})
+        phases = layered.get("world", {}).get("phases", [])
+
+        for phase in phases:
+            if phase.get("round") == round_num:
+                return phase.get("prompt_injection", "")
+        return None
+
+    def _check_probabilistic_events(self, round_num: int) -> List[str]:
+        """Check and trigger probabilistic events"""
+        layered = self.config.get("layered_spec", {})
+        events = layered.get("world", {}).get("events", [])
+        triggered = []
+
+        for event in events:
+            if event.get("type") == "probabilistic":
+                prob = event.get("probability_per_round", 0)
+                if random.random() < prob:
+                    prompt = event.get("prompt_injection", "")
+                    if prompt:
+                        triggered.append(prompt)
+                        logging.getLogger(__name__).info(
+                            f"Event triggered: {event.get('name', 'unknown')} at round {round_num}"
+                        )
+        return triggered
+
+    def _filter_self_interactions(self, actions: Dict, active_agents: List) -> Dict:
+        """Prevent agents from quoting/reposting their own content"""
+        layered = self.config.get("layered_spec", {})
+        if not layered.get("dynamics", {}).get("prevent_self_quote", False):
+            return actions
+        # Note: actual self-quote prevention requires OASIS env access
+        # This is a placeholder — the real fix needs to patch the OASIS action resolver
+        return actions
+
+    def _check_convergence(self, round_num: int, action_counts: List[int]) -> bool:
+        """Check if simulation has converged based on action rate stability"""
+        layered = self.config.get("layered_spec", {})
+        conv = layered.get("dynamics", {}).get("convergence", {})
+
+        if not conv.get("enabled", False):
+            return False
+
+        min_rounds = conv.get("min_rounds", 15)
+        if round_num < min_rounds:
+            return False
+
+        window = conv.get("check_window", 5)
+        if len(action_counts) < window:
+            return False
+
+        recent = action_counts[-window:]
+        mean = sum(recent) / len(recent)
+        if mean == 0:
+            return False
+
+        variance = sum((x - mean) ** 2 for x in recent) / len(recent)
+        cv = (variance ** 0.5) / mean  # coefficient of variation
+
+        threshold = conv.get("action_rate_stability_threshold", 0.1)
+        if cv < threshold:
+            logging.getLogger(__name__).info(
+                f"Convergence detected at round {round_num}: CV={cv:.3f} < {threshold}"
+            )
+            return True
+
+        return False
+
     async def run(self, max_rounds: int = None):
         """运行Twitter模拟
-        
+
         Args:
             max_rounds: 最大模拟轮数（可选，用于截断过长的模拟）
         """
@@ -567,7 +686,14 @@ class TwitterSimulationRunner:
         # 创建模型
         print("\n初始化LLM模型...")
         model = self._create_model()
-        
+
+        # Set language directive for agents
+        layered = self.config.get("layered_spec", {})
+        language = layered.get("world", {}).get("language", "")
+        if language:
+            os.environ["MIROFISH_LANGUAGE"] = language
+            print(f"Language directive: {language}")
+
         # 加载Agent图
         print("加载Agent Profile...")
         profile_path = self._get_profile_path()
@@ -629,7 +755,8 @@ class TwitterSimulationRunner:
         # 主模拟循环
         print("\n开始模拟循环...")
         start_time = datetime.now()
-        
+        action_counts = []  # Track actions per round for convergence
+
         for round_num in range(total_rounds):
             # 计算当前模拟时间
             simulated_minutes = round_num * minutes_per_round
@@ -643,13 +770,34 @@ class TwitterSimulationRunner:
             
             if not active_agents:
                 continue
-            
-            # 构建动作
+
+            # Check phase transitions
+            phase_prompt = self._get_phase_prompt(round_num)
+            if phase_prompt:
+                print(f"  Phase transition: {phase_prompt[:60]}...")
+
+            # Check probabilistic events
+            event_prompts = self._check_probabilistic_events(round_num)
+            for ep in event_prompts:
+                print(f"  Event triggered: {ep[:60]}...")
+
+            # Build actions with weighted selection
             actions = {
-                agent: LLMAction()
+                agent: self._select_weighted_action(agent)
                 for _, agent in active_agents
             }
-            
+
+            # Filter self-interactions
+            actions = self._filter_self_interactions(actions, active_agents)
+
+            # Track action count for convergence
+            action_counts.append(len(actions))
+
+            # Check convergence
+            if self._check_convergence(round_num, action_counts):
+                print(f"\n  Convergence detected at round {round_num + 1}. Stopping early.")
+                break
+
             # 执行动作
             await self.env.step(actions)
             

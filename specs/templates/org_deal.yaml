@@ -1,0 +1,172 @@
+name: org_deal_template
+version: "1.0"
+description: "Organizational deal dynamics simulation — models corporate governance, stakeholder alignment, and deal execution in a data center investment context"
+
+world:
+  domain: corporate_governance
+  language: en
+  description: "A corporate environment where executives, board members, competitors, and market forces interact around a potential acquisition/investment"
+  resources:
+    - board_alignment
+    - market_credibility
+    - deal_momentum
+  channels:
+    - twitter
+  forces:
+    - name: governance_friction
+      description: "Board and regulatory approval creates structural delay"
+      decay_rate: 0.1
+    - name: competitive_pressure
+      description: "Rival bids accelerate timeline"
+      threshold: 5
+    - name: information_leakage
+      description: "Deal details gradually become public knowledge"
+      decay_rate: 0.15
+  events:
+    - name: deal_announcement
+      type: scheduled
+      trigger_round: 0
+      affects: [executive, board]
+      prompt_injection: "A potential acquisition target has been identified. Initial discussions are underway."
+    - name: competitor_bid
+      type: probabilistic
+      probability_per_round: 0.06
+      affects: [executive, competitor, market_sentiment]
+      effect: "A competing bid emerges"
+      prompt_injection: "Market intelligence suggests a competing bidder may be preparing an offer."
+    - name: regulatory_update
+      type: probabilistic
+      probability_per_round: 0.04
+      affects: [regulatory, executive]
+      effect: "Regulatory development affects deal timeline"
+      prompt_injection: "A regulatory development has implications for the deal timeline."
+  phases:
+    - round: 1
+      name: "initial_assessment"
+      prompt_injection: "The deal is in early assessment phase. Information is limited and positions are forming."
+    - round: 12
+      name: "due_diligence"
+      prompt_injection: "Due diligence is underway. More detailed information is emerging about the target."
+    - round: 22
+      name: "negotiation"
+      prompt_injection: "Active negotiations are in progress. Key terms are being debated."
+  hot_topics:
+    - acquisition valuation
+    - governance alignment
+    - market positioning
+    - regulatory approval
+  narrative_direction: "Model how corporate stakeholders align or diverge during a major investment decision"
+
+population:
+  mode: template
+  total_agents: 26
+  archetypes:
+    - name: executive
+      count: 5
+      description: "C-suite executives driving the deal. Strategic, measured, high influence."
+      system_prompt_template: "You are a senior executive involved in a major corporate deal. You communicate strategically and carefully. You consider both upside potential and downside risks. Your public statements are measured but your private analysis is thorough."
+      influence_range: [2.0, 3.0]
+      activity_level_range: [0.4, 0.65]
+      sentiment_bias_range: [-0.1, 0.2]
+      temperature: 0.4
+      posts_per_hour_range: [0.5, 1.5]
+      comments_per_hour_range: [1.0, 2.0]
+      active_hours: [8, 9, 10, 11, 14, 15, 16, 17]
+    - name: board
+      count: 4
+      description: "Board members providing governance oversight. Deliberate, risk-aware."
+      system_prompt_template: "You are a board member with fiduciary responsibility. You ask tough questions, demand proper process, and prioritize governance. You are deliberate and risk-aware in your communications."
+      influence_range: [2.5, 3.0]
+      activity_level_range: [0.25, 0.4]
+      sentiment_bias_range: [-0.2, 0.1]
+      temperature: 0.4
+      posts_per_hour_range: [0.3, 0.8]
+      comments_per_hour_range: [1.0, 2.0]
+      active_hours: [9, 10, 11, 14, 15, 16]
+    - name: competitor
+      count: 3
+      description: "Rival firms watching and potentially bidding. Aggressive, information-seeking."
+      system_prompt_template: "You are a competitor observing this deal. You analyze it for strategic implications to your own business. You may signal counter-moves or cast doubt on the deal's value."
+      influence_range: [1.5, 2.0]
+      activity_level_range: [0.3, 0.55]
+      sentiment_bias_range: [-0.4, -0.1]
+      temperature: 0.6
+      posts_per_hour_range: [0.5, 1.0]
+      comments_per_hour_range: [1.5, 3.0]
+      active_hours: [8, 9, 10, 11, 14, 15, 16, 17, 20, 21]
+    - name: market_sentiment
+      count: 4
+      description: "Market analysts, investors, and media representing external perception."
+      system_prompt_template: "You are a market observer — analyst, investor, or financial journalist. You evaluate the deal on its financial merits, compare it to precedent transactions, and assess market reaction."
+      influence_range: [1.0, 1.5]
+      activity_level_range: [0.5, 0.75]
+      sentiment_bias_range: [-0.3, 0.3]
+      temperature: 0.6
+      posts_per_hour_range: [1.0, 2.0]
+      comments_per_hour_range: [2.0, 3.0]
+      active_hours: [8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20]
+    - name: conduit
+      count: 3
+      description: "Internal coordinators bridging HQ, regional teams, and board. High comment rate."
+      system_prompt_template: "You are an internal coordinator who bridges communication between different stakeholder groups. You summarize developments, flag alignment issues, and connect conversations across teams."
+      influence_range: [1.5, 2.0]
+      activity_level_range: [0.5, 0.7]
+      sentiment_bias_range: [-0.1, 0.1]
+      temperature: 0.6
+      posts_per_hour_range: [0.5, 1.0]
+      comments_per_hour_range: [3.0, 4.0]
+      active_hours: [8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21]
+    - name: regulatory
+      count: 2
+      description: "Regulatory/government entities. Slow, high-influence, gatekeeper role."
+      system_prompt_template: "You represent a regulatory or government entity. You communicate formally and infrequently. Your statements carry significant weight. You focus on compliance, approval processes, and policy implications."
+      influence_range: [2.5, 3.0]
+      activity_level_range: [0.15, 0.3]
+      sentiment_bias_range: [-0.1, 0.0]
+      temperature: 0.3
+      posts_per_hour_range: [0.1, 0.3]
+      comments_per_hour_range: [0.3, 0.8]
+      active_hours: [9, 10, 11, 14, 15, 16]
+    - name: operational
+      count: 5
+      description: "Mid-level operational staff affected by the deal. Practical concerns, moderate engagement."
+      system_prompt_template: "You are an operational team member whose work is directly affected by this deal. You focus on practical implications — integration risks, resource allocation, team impact. You share ground-level perspective."
+      influence_range: [0.8, 1.2]
+      activity_level_range: [0.3, 0.55]
+      sentiment_bias_range: [-0.2, 0.2]
+      temperature: 0.7
+      posts_per_hour_range: [0.3, 1.0]
+      comments_per_hour_range: [1.0, 2.5]
+      active_hours: [9, 10, 11, 12, 14, 15, 16, 17, 18, 19]
+  variance:
+    activity_level: 0.15
+    sentiment_bias: 0.2
+    influence_weight: 0.15
+
+dynamics:
+  action_weights:
+    like_post: 0.35
+    comment: 0.30
+    create_post: 0.15
+    quote_post: 0.10
+    repost: 0.05
+    follow: 0.02
+    do_nothing: 0.03
+  total_simulation_hours: 30
+  minutes_per_round: 60
+  start_hour: 8
+  peak_hours: [9, 10, 11, 14, 15, 16]
+  peak_multiplier: 1.3
+  off_peak_hours: [0, 1, 2, 3, 4, 5, 6]
+  off_peak_multiplier: 0.1
+  feed_recent_posts: 10
+  feed_popular_posts: 5
+  max_persona_chars: 300
+  max_system_agent_influence: 1.5
+  convergence:
+    enabled: true
+    min_rounds: 15
+    action_rate_stability_threshold: 0.12
+    topic_entropy_threshold: 0.35
+    check_window: 5
+  prevent_self_quote: true
