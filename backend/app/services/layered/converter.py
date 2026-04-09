@@ -134,6 +134,7 @@ def _build_time_config(spec: LayeredSimSpec) -> Dict[str, Any]:
         "morning_activity_multiplier": 0.4,
         "work_hours": list(range(9, 19)),
         "work_activity_multiplier": 0.7,
+        "start_hour": spec.dynamics.start_hour,
     }
 
 

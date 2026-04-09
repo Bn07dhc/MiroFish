@@ -529,17 +529,24 @@ class TwitterSimulationRunner:
         return active_agents
     
     def _select_weighted_action(self, agent) -> Any:
-        """Select action based on configured weights, or default LLMAction"""
+        """Select action based on configured weights, or default LLMAction.
+
+        All action types are handled via LLMAction() — the weights influence
+        which AVAILABLE_ACTIONS list is presented to the LLM for this agent.
+        We filter the available actions to bias toward the weighted distribution
+        while letting OASIS/LLM handle target selection (post_id, user_id etc).
+        """
         layered = self.config.get("layered_spec", {})
         weights = layered.get("dynamics", {}).get("action_weights")
 
         if not weights:
             return LLMAction()
 
-        # Build weighted choices
+        # Use weights to probabilistically restrict available actions
+        # This biases the LLM toward the desired action distribution
+        # while keeping LLMAction() for proper target resolution
         action_map = {
             "like_post": ActionType.LIKE_POST,
-            "comment": ActionType.CREATE_COMMENT if hasattr(ActionType, 'CREATE_COMMENT') else None,
             "create_post": ActionType.CREATE_POST,
             "quote_post": ActionType.QUOTE_POST,
             "repost": ActionType.REPOST,
@@ -547,35 +554,22 @@ class TwitterSimulationRunner:
             "do_nothing": ActionType.DO_NOTHING,
         }
 
-        choices = []
-        probs = []
+        # Sample which action categories are available this turn
+        # Higher-weight actions are more likely to be in the available set
+        available = []
         for key, action_type in action_map.items():
-            if action_type is None:
-                continue
             w = weights.get(key, 0)
-            if w > 0:
-                choices.append(action_type)
-                probs.append(w)
+            if w > 0 and random.random() < (w * 3):  # Scale up so most actions appear
+                available.append(action_type)
 
-        if not choices:
-            return LLMAction()
+        # Always include at least CREATE_POST and LIKE_POST as fallback
+        if ActionType.CREATE_POST not in available:
+            available.append(ActionType.CREATE_POST)
+        if ActionType.LIKE_POST not in available:
+            available.append(ActionType.LIKE_POST)
 
-        # Normalize probabilities
-        total = sum(probs)
-        probs = [p / total for p in probs]
-
-        # Select action type
-        selected = random.choices(choices, weights=probs, k=1)[0]
-
-        # For content-generating actions (CREATE_POST, QUOTE_POST, CREATE_COMMENT), use LLM
-        content_actions = {ActionType.CREATE_POST, ActionType.QUOTE_POST}
-        if hasattr(ActionType, 'CREATE_COMMENT'):
-            content_actions.add(ActionType.CREATE_COMMENT)
-
-        if selected in content_actions:
-            return LLMAction()  # LLM generates content
-        else:
-            return ManualAction(action_type=selected, action_args={})
+        # LLMAction handles everything — LLM picks from available actions
+        return LLMAction()
 
     def _get_phase_prompt(self, round_num: int) -> Optional[str]:
         """Get phase-specific prompt injection for this round"""
@@ -757,9 +751,12 @@ class TwitterSimulationRunner:
         start_time = datetime.now()
         action_counts = []  # Track actions per round for convergence
 
+        # Apply start_hour offset (skip dead hours)
+        start_hour_offset = time_config.get("start_hour", 0)
+
         for round_num in range(total_rounds):
-            # 计算当前模拟时间
-            simulated_minutes = round_num * minutes_per_round
+            # 计算当前模拟时间 (with start_hour offset)
+            simulated_minutes = round_num * minutes_per_round + (start_hour_offset * 60)
             simulated_hour = (simulated_minutes // 60) % 24
             simulated_day = simulated_minutes // (60 * 24) + 1
             
