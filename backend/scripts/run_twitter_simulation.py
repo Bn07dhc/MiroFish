@@ -452,7 +452,7 @@ class TwitterSimulationRunner:
         if llm_base_url:
             os.environ["OPENAI_API_BASE_URL"] = llm_base_url
         
-        print(f"LLM配置: model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else '默认'}...")
+        print(f"LLM config: model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else 'default'}...")
         
         return ModelFactory.create(
             model_platform=ModelPlatformType.OPENAI,
@@ -571,6 +571,148 @@ class TwitterSimulationRunner:
         # LLMAction handles everything — LLM picks from available actions
         return LLMAction()
 
+    def _patch_agents_with_weights(self):
+        """Monkey-patch OASIS agents to inject action weight guidance into LLM prompts.
+
+        The OASIS framework asks the LLM to freely choose an action, which causes
+        LLMs to overwhelmingly pick text-generating actions (CREATE_POST, QUOTE_POST)
+        at 80-90% of total actions. Real social media has ~40% likes, ~25% comments.
+
+        This patch intercepts perform_action_by_llm() to inject explicit probability
+        guidance into the user prompt, steering the LLM toward realistic action ratios.
+        """
+        layered = self.config.get("layered_spec", {})
+        weights = layered.get("dynamics", {}).get("action_weights")
+        language = layered.get("world", {}).get("language", "")
+
+        if not weights:
+            return
+
+        # Build the guidance string
+        weight_lines = []
+        label_map = {
+            "like_post": "like a post",
+            "comment": "comment/reply on a post",
+            "create_post": "create an original post",
+            "quote_post": "quote a post with your commentary",
+            "repost": "repost/share someone's post",
+            "follow": "follow a user",
+            "do_nothing": "do nothing (just browse)",
+        }
+        for key, label in label_map.items():
+            w = weights.get(key, 0)
+            if w > 0:
+                pct = int(w * 100)
+                weight_lines.append(f"- {label}: ~{pct}% of the time")
+
+        guidance = (
+            "\n\nIMPORTANT ACTION GUIDELINES: "
+            "On real social media, most actions are passive engagement (likes, reposts), "
+            "not original content creation. You MUST follow these approximate action frequencies "
+            "to produce realistic behavior:\n"
+            + "\n".join(weight_lines) +
+            "\n\nFor example, if you see interesting posts in your feed, you should LIKE them "
+            "about 40% of the time rather than always creating new posts or quotes. "
+            "Only create original posts when you have something genuinely new to say. "
+            "Liking and reposting are valid and important actions."
+        )
+
+        # Add language directive
+        if language:
+            lang_names = {"en": "English", "zh": "Chinese", "ko": "Korean", "ja": "Japanese"}
+            lang_name = lang_names.get(language, language)
+            guidance += f"\n\nYou MUST write all content in {lang_name}."
+
+        # Patch each agent's perform_action_by_llm
+        agent_count = 0
+        for agent_id in range(len(self.config.get("agent_configs", []))):
+            try:
+                agent = self.env.agent_graph.get_agent(agent_id)
+                original_method = agent.perform_action_by_llm
+
+                async def patched_perform(self_agent=agent, orig=original_method, guide=guidance):
+                    """Patched perform_action_by_llm with action weight guidance."""
+                    from camel.messages import BaseMessage as BM
+
+                    # Get environment prompt
+                    env_prompt = await self_agent.env.to_text_prompt()
+
+                    # Build enhanced user message with weight guidance
+                    user_msg = BM.make_user_message(
+                        role_name="User",
+                        content=(
+                            f"Please perform social media actions after observing the "
+                            f"platform environments. "
+                            f"Here is your social media environment: {env_prompt}"
+                            f"{guide}"
+                        )
+                    )
+                    try:
+                        agent_log = logging.getLogger("social.agent")
+                        agent_log.info(
+                            f"Agent {self_agent.social_agent_id} observing environment "
+                            f"(with weight guidance)")
+                        response = await self_agent.astep(user_msg)
+                        for tool_call in response.info['tool_calls']:
+                            action_name = tool_call.tool_name
+                            args = tool_call.args
+                            agent_log.info(
+                                f"Agent {self_agent.social_agent_id} performed "
+                                f"action: {action_name} with args: {args}")
+                            return response
+                    except Exception as e:
+                        agent_log.error(f"Agent {self_agent.social_agent_id} error: {e}")
+                        return e
+
+                agent.perform_action_by_llm = patched_perform
+
+                # Also override the env_template to remove the anti-like bias
+                # and add neutral action guidance
+                from string import Template
+                agent.env.env_template = Template(
+                    "$groups_env\n"
+                    "$posts_env\n"
+                    "Choose one action that best reflects your current inclination "
+                    "based on your profile and the posts you see. "
+                    "Remember: liking, reposting, and commenting are all valuable actions, "
+                    "not just creating new posts."
+                )
+
+                # Append language directive to agent's system message
+                if language:
+                    lang_names = {"en": "English", "zh": "Chinese", "ko": "Korean", "ja": "Japanese"}
+                    lang_name = lang_names.get(language, language)
+                    if lang_name not in agent.system_message.content:
+                        agent.system_message.content += (
+                            f"\n\n# LANGUAGE REQUIREMENT\n"
+                            f"You MUST write ALL content, posts, comments, and responses in {lang_name}. "
+                            f"Never use any other language."
+                        )
+
+                # Patch interview to enforce language
+                if language:
+                    original_interview = agent.perform_interview
+                    lang_names = {"en": "English", "zh": "Chinese", "ko": "Korean", "ja": "Japanese"}
+                    lang_name = lang_names.get(language, language)
+                    lang_suffix = f"\n\nIMPORTANT: You MUST respond entirely in {lang_name}."
+
+                    async def patched_interview(prompt, self_agent=agent, orig=original_interview, ls=lang_suffix):
+                        return await orig(prompt + ls)
+
+                    agent.perform_interview = patched_interview
+
+                agent_count += 1
+            except Exception:
+                pass
+
+        if agent_count > 0:
+            print(f"  Patched {agent_count} agents with action weight guidance")
+            # Show weight targets
+            for key in ["like_post", "comment", "create_post", "quote_post", "repost"]:
+                w = weights.get(key, 0)
+                if w > 0:
+                    print(f"    {key}: {int(w*100)}%")
+
     def _get_phase_prompt(self, round_num: int) -> Optional[str]:
         """Get phase-specific prompt injection for this round"""
         layered = self.config.get("layered_spec", {})
@@ -648,10 +790,10 @@ class TwitterSimulationRunner:
             max_rounds: 最大模拟轮数（可选，用于截断过长的模拟）
         """
         print("=" * 60)
-        print("OASIS Twitter模拟")
-        print(f"配置文件: {self.config_path}")
-        print(f"模拟ID: {self.config.get('simulation_id', 'unknown')}")
-        print(f"等待命令模式: {'启用' if self.wait_for_commands else '禁用'}")
+        print("OASIS Twitter Simulation (Layered Spec)")
+        print(f"Config: {self.config_path}")
+        print(f"Sim ID: {self.config.get('simulation_id', 'unknown')}")
+        print(f"Wait mode: {'enabled' if self.wait_for_commands else 'disabled'}")
         print("=" * 60)
         
         # 加载时间配置
@@ -667,18 +809,18 @@ class TwitterSimulationRunner:
             original_rounds = total_rounds
             total_rounds = min(total_rounds, max_rounds)
             if total_rounds < original_rounds:
-                print(f"\n轮数已截断: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
-        
-        print(f"\n模拟参数:")
-        print(f"  - 总模拟时长: {total_hours}小时")
-        print(f"  - 每轮时间: {minutes_per_round}分钟")
-        print(f"  - 总轮数: {total_rounds}")
+                print(f"\nRounds truncated: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
+
+        print(f"\nSimulation parameters:")
+        print(f"  - Duration: {total_hours} hours")
+        print(f"  - Minutes per round: {minutes_per_round}")
+        print(f"  - Total rounds: {total_rounds}")
         if max_rounds:
-            print(f"  - 最大轮数限制: {max_rounds}")
-        print(f"  - Agent数量: {len(self.config.get('agent_configs', []))}")
-        
-        # 创建模型
-        print("\n初始化LLM模型...")
+            print(f"  - Max rounds limit: {max_rounds}")
+        print(f"  - Agent count: {len(self.config.get('agent_configs', []))}")
+
+        # Create model
+        print("\nInitializing LLM model...")
         model = self._create_model()
 
         # Set language directive for agents
@@ -689,10 +831,10 @@ class TwitterSimulationRunner:
             print(f"Language directive: {language}")
 
         # 加载Agent图
-        print("加载Agent Profile...")
+        print("Loading agent profiles...")
         profile_path = self._get_profile_path()
         if not os.path.exists(profile_path):
-            print(f"错误: Profile文件不存在: {profile_path}")
+            print(f"Error: Profile file not found: {profile_path}")
             return
         
         self.agent_graph = await generate_twitter_agent_graph(
@@ -705,10 +847,10 @@ class TwitterSimulationRunner:
         db_path = self._get_db_path()
         if os.path.exists(db_path):
             os.remove(db_path)
-            print(f"已删除旧数据库: {db_path}")
-        
-        # 创建环境
-        print("创建OASIS环境...")
+            print(f"Removed old database: {db_path}")
+
+        # Create environment
+        print("Creating OASIS environment...")
         self.env = oasis.make(
             agent_graph=self.agent_graph,
             platform=oasis.DefaultPlatformType.TWITTER,
@@ -717,8 +859,11 @@ class TwitterSimulationRunner:
         )
         
         await self.env.reset()
-        print("环境初始化完成\n")
-        
+        print("Environment initialized\n")
+
+        # Patch agents with action weight guidance (layered spec)
+        self._patch_agents_with_weights()
+
         # 初始化IPC处理器
         self.ipc_handler = IPCHandler(self.simulation_dir, self.env, self.agent_graph)
         self.ipc_handler.update_status("running")
@@ -728,7 +873,7 @@ class TwitterSimulationRunner:
         initial_posts = event_config.get("initial_posts", [])
         
         if initial_posts:
-            print(f"执行初始事件 ({len(initial_posts)}条初始帖子)...")
+            print(f"Executing initial events ({len(initial_posts)} seed posts)...")
             initial_actions = {}
             for post in initial_posts:
                 agent_id = post.get("poster_agent_id", 0)
@@ -740,14 +885,14 @@ class TwitterSimulationRunner:
                         action_args={"content": content}
                     )
                 except Exception as e:
-                    print(f"  警告: 无法为Agent {agent_id}创建初始帖子: {e}")
-            
+                    print(f"  Warning: cannot create initial post for Agent {agent_id}: {e}")
+
             if initial_actions:
                 await self.env.step(initial_actions)
-                print(f"  已发布 {len(initial_actions)} 条初始帖子")
+                print(f"  Published {len(initial_actions)} initial posts")
         
         # 主模拟循环
-        print("\n开始模拟循环...")
+        print("\nStarting simulation loop...")
         start_time = datetime.now()
         action_counts = []  # Track actions per round for convergence
 
@@ -808,15 +953,15 @@ class TwitterSimulationRunner:
                       f"- elapsed: {elapsed:.1f}s")
         
         total_elapsed = (datetime.now() - start_time).total_seconds()
-        print(f"\n模拟循环完成!")
-        print(f"  - 总耗时: {total_elapsed:.1f}秒")
-        print(f"  - 数据库: {db_path}")
+        print(f"\nSimulation complete!")
+        print(f"  - Total time: {total_elapsed:.1f}s")
+        print(f"  - Database: {db_path}")
         
         # 是否进入等待命令模式
         if self.wait_for_commands:
             print("\n" + "=" * 60)
-            print("进入等待命令模式 - 环境保持运行")
-            print("支持的命令: interview, batch_interview, close_env")
+            print("Entering command wait mode - environment stays alive")
+            print("Supported commands: interview, batch_interview, close_env")
             print("=" * 60)
             
             self.ipc_handler.update_status("alive")
@@ -845,7 +990,7 @@ class TwitterSimulationRunner:
         self.ipc_handler.update_status("stopped")
         await self.env.close()
         
-        print("环境已关闭")
+        print("Environment closed")
         print("=" * 60)
 
 
@@ -877,7 +1022,7 @@ async def main():
     _shutdown_event = asyncio.Event()
     
     if not os.path.exists(args.config):
-        print(f"错误: 配置文件不存在: {args.config}")
+        print(f"Error: Config file not found: {args.config}")
         sys.exit(1)
     
     # 初始化日志配置（使用固定文件名，清理旧日志）
@@ -922,4 +1067,4 @@ if __name__ == "__main__":
     except SystemExit:
         pass
     finally:
-        print("模拟进程已退出")
+        print("Simulation process exited")
