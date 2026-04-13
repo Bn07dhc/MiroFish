@@ -186,8 +186,13 @@ class GraphBuilderService:
             
         except Exception as e:
             import traceback
-            error_msg = f"{str(e)}\n{traceback.format_exc()}"
-            self.task_manager.fail_task(task_id, error_msg)
+            # 完整堆栈只入服务器日志，对外可见的 task.error 仅保留概要消息
+            logger = __import__('logging').getLogger('mirofish.graph_builder')
+            logger.error(
+                f"图谱构建任务 {task_id} 失败: {type(e).__name__}: {e}\n"
+                f"{traceback.format_exc()}"
+            )
+            self.task_manager.fail_task(task_id, str(e))
     
     def create_graph(self, name: str) -> str:
         """创建Zep图谱（公开方法）"""

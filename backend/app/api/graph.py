@@ -509,7 +509,9 @@ def build_graph():
                     task_id,
                     status=TaskStatus.FAILED,
                     message=t('progress.buildFailed', error=str(e)),
-                    error=traceback.format_exc()
+                    # 不把完整堆栈写进对外可见的 task.error 字段；详情仅留在
+                    # 服务器日志（上面的 build_logger.debug 已记录）。
+                    error=str(e)
                 )
         
         # 启动后台线程
