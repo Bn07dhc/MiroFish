@@ -64,6 +64,19 @@ class Config:
         ).split(',')
         if origin.strip()
     ]
+
+    # API 密钥：当设置时，所有 /api/* 请求必须携带 X-API-Key 或 Authorization: Bearer
+    # 头部且值匹配；未设置时视为开放访问（仅适合本地开发）。
+    # 多个密钥可用逗号分隔，便于轮换或多客户端使用。
+    API_KEYS = [
+        k.strip()
+        for k in os.environ.get('API_KEYS', '').split(',')
+        if k.strip()
+    ]
+
+    # 速率限制：每个客户端（按 IP/API key）每窗口允许的最大请求数
+    # 0 表示禁用限流。窗口长度为 60 秒。
+    RATE_LIMIT_PER_MINUTE = int(os.environ.get('RATE_LIMIT_PER_MINUTE', '120'))
     
     # JSON配置 - 禁用ASCII转义，让中文直接显示（而不是 \uXXXX 格式）
     JSON_AS_ASCII = False

@@ -3,7 +3,6 @@
 接口2：使用Zep API构建Standalone Graph
 """
 
-import os
 import uuid
 import time
 import threading
@@ -383,7 +382,7 @@ class GraphBuilderService:
                         pending_episodes.remove(ep_uuid)
                         completed_count += 1
                         
-                except Exception as e:
+                except Exception:
                     # 忽略单个查询错误，继续
                     pass
             

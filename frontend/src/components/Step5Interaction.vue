@@ -415,6 +415,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
 import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulation'
+import { sanitizeHtml } from '../utils/safeHtml'
 
 const { t } = useI18n()
 
@@ -638,7 +639,8 @@ const renderMarkdown = (content) => {
   }
   html = tokens.join('')
 
-  return html
+  // 通过 DOMPurify 净化，移除 LLM 生成内容中潜在的 <script>/事件处理属性等 XSS 载荷
+  return sanitizeHtml(html)
 }
 
 // Chat Methods

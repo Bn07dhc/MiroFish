@@ -394,6 +394,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } f
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getAgentLog, getConsoleLog } from '../api/report'
+import { sanitizeHtml } from '../utils/safeHtml'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -1531,11 +1532,13 @@ const InterviewDisplay = {
                   ]),
                   h('div', {
                     class: ['qa-text', 'answer-text', { 'placeholder-text': isPlaceholder }],
-                    innerHTML: isPlaceholder
-                      ? answerText
-                      : formatAnswer(answerText, isExpanded)
-                          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                          .replace(/\n/g, '<br>')
+                    innerHTML: sanitizeHtml(
+                      isPlaceholder
+                        ? answerText
+                        : formatAnswer(answerText, isExpanded)
+                            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                            .replace(/\n/g, '<br>')
+                    )
                   }),
                   // Expand/Collapse Button（占位文本不显示）
                   !isPlaceholder && answerText.length > 400 && h('button', {
@@ -1973,7 +1976,8 @@ const renderMarkdown = (content) => {
   }
   html = tokens.join('')
 
-  return html
+  // 通过 DOMPurify 净化，移除 LLM 生成内容中潜在的 <script>/事件处理属性等 XSS 载荷
+  return sanitizeHtml(html)
 }
 
 const getTimelineItemClass = (log, idx, total) => {

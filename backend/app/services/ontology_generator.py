@@ -3,7 +3,6 @@
 接口1：分析文本内容，生成适合社会模拟的实体和关系类型定义
 """
 
-import json
 import logging
 import re
 from typing import Dict, Any, List, Optional
@@ -436,8 +435,8 @@ class OntologyGenerator:
                     attr_desc = attr.get("description", attr_name)
                     code_lines.append(f'    {attr_name}: EntityText = Field(')
                     code_lines.append(f'        description="{attr_desc}",')
-                    code_lines.append(f'        default=None')
-                    code_lines.append(f'    )')
+                    code_lines.append('        default=None')
+                    code_lines.append('    )')
             else:
                 code_lines.append('    pass')
             
@@ -464,8 +463,8 @@ class OntologyGenerator:
                     attr_desc = attr.get("description", attr_name)
                     code_lines.append(f'    {attr_name}: EntityText = Field(')
                     code_lines.append(f'        description="{attr_desc}",')
-                    code_lines.append(f'        default=None')
-                    code_lines.append(f'    )')
+                    code_lines.append('        default=None')
+                    code_lines.append('    )')
             else:
                 code_lines.append('    pass')
             

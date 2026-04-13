@@ -1,10 +1,21 @@
 """
 模拟相关API路由
 Step2: Zep实体读取与过滤、OASIS模拟准备与运行（全程自动化）
+
+文件分区目录（按 /api/simulation 路由前缀分组，便于检索）：
+  实体读取        : /entities/...
+  生命周期管理    : /create, /prepare*, /<id>, /list, /history
+  配置与脚本      : /<id>/profiles*, /<id>/config*, /script/*, /generate-profiles
+  运行控制        : /start, /stop, /<id>/run-status*
+  时间线 / 数据   : /<id>/actions, /timeline, /agent-stats, /posts, /comments
+  访谈            : /interview, /interview/batch, /interview/all, /interview/history
+  环境            : /env-status, /close-env
+
+辅助函数 (optimize_interview_prompt, check_simulation_prepared,
+get_report_id_for_simulation) 已抽离至 _simulation_helpers.py，便于单测。
 """
 
 import os
-import traceback
 from flask import request, jsonify, send_file
 
 from . import simulation_bp
@@ -12,36 +23,18 @@ from ..config import Config
 from ..services.zep_entity_reader import ZepEntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
 from ..services.simulation_manager import SimulationManager, SimulationStatus
-from ..services.simulation_runner import SimulationRunner, RunnerStatus
+from ..services.simulation_runner import SimulationRunner
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
 from ..utils.validators import validate_safe_identifier, safe_join
 from ..models.project import ProjectManager
+from ._simulation_helpers import (
+    optimize_interview_prompt,
+    check_simulation_prepared as _check_simulation_prepared,
+    get_report_id_for_simulation as _get_report_id_for_simulation,
+)
 
 logger = get_logger('mirofish.api.simulation')
-
-
-# Interview prompt 优化前缀
-# 添加此前缀可以避免Agent调用工具，直接用文本回复
-INTERVIEW_PROMPT_PREFIX = "结合你的人设、所有的过往记忆与行动，不调用任何工具直接用文本回复我："
-
-
-def optimize_interview_prompt(prompt: str) -> str:
-    """
-    优化Interview提问，添加前缀避免Agent调用工具
-    
-    Args:
-        prompt: 原始提问
-        
-    Returns:
-        优化后的提问
-    """
-    if not prompt:
-        return prompt
-    # 避免重复添加前缀
-    if prompt.startswith(INTERVIEW_PROMPT_PREFIX):
-        return prompt
-    return f"{INTERVIEW_PROMPT_PREFIX}{prompt}"
 
 
 # ============== 实体读取接口 ==============
@@ -86,8 +79,7 @@ def get_graph_entities(graph_id: str):
         logger.error(f"获取图谱实体失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -119,8 +111,7 @@ def get_entity_detail(graph_id: str, entity_uuid: str):
         logger.error(f"获取实体详情失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -156,8 +147,7 @@ def get_entities_by_type(graph_id: str, entity_type: str):
         logger.error(f"获取实体失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -233,133 +223,8 @@ def create_simulation():
         logger.error(f"创建模拟失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
-
-
-def _check_simulation_prepared(simulation_id: str) -> tuple:
-    """
-    检查模拟是否已经准备完成
-    
-    检查条件：
-    1. state.json 存在且 status 为 "ready"
-    2. 必要文件存在：reddit_profiles.json, twitter_profiles.csv, simulation_config.json
-    
-    注意：运行脚本(run_*.py)保留在 backend/scripts/ 目录，不再复制到模拟目录
-    
-    Args:
-        simulation_id: 模拟ID
-        
-    Returns:
-        (is_prepared: bool, info: dict)
-    """
-    import os
-    from ..config import Config
-
-    # 防止路径穿越：拒绝包含 '/'、'..'、空字节等非法字符的 simulation_id
-    try:
-        validate_safe_identifier(simulation_id, field_name='simulation_id')
-        simulation_dir = safe_join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
-    except ValueError as e:
-        return False, {"reason": f"非法的 simulation_id: {e}"}
-
-    # 检查目录是否存在
-    if not os.path.exists(simulation_dir):
-        return False, {"reason": "模拟目录不存在"}
-    
-    # 必要文件列表（不包括脚本，脚本位于 backend/scripts/）
-    required_files = [
-        "state.json",
-        "simulation_config.json",
-        "reddit_profiles.json",
-        "twitter_profiles.csv"
-    ]
-    
-    # 检查文件是否存在
-    existing_files = []
-    missing_files = []
-    for f in required_files:
-        file_path = os.path.join(simulation_dir, f)
-        if os.path.exists(file_path):
-            existing_files.append(f)
-        else:
-            missing_files.append(f)
-    
-    if missing_files:
-        return False, {
-            "reason": "缺少必要文件",
-            "missing_files": missing_files,
-            "existing_files": existing_files
-        }
-    
-    # 检查state.json中的状态
-    state_file = os.path.join(simulation_dir, "state.json")
-    try:
-        import json
-        with open(state_file, 'r', encoding='utf-8') as f:
-            state_data = json.load(f)
-        
-        status = state_data.get("status", "")
-        config_generated = state_data.get("config_generated", False)
-        
-        # 详细日志
-        logger.debug(f"检测模拟准备状态: {simulation_id}, status={status}, config_generated={config_generated}")
-        
-        # 如果 config_generated=True 且文件存在，认为准备完成
-        # 以下状态都说明准备工作已完成：
-        # - ready: 准备完成，可以运行
-        # - preparing: 如果 config_generated=True 说明已完成
-        # - running: 正在运行，说明准备早就完成了
-        # - completed: 运行完成，说明准备早就完成了
-        # - stopped: 已停止，说明准备早就完成了
-        # - failed: 运行失败（但准备是完成的）
-        prepared_statuses = ["ready", "preparing", "running", "completed", "stopped", "failed"]
-        if status in prepared_statuses and config_generated:
-            # 获取文件统计信息
-            profiles_file = os.path.join(simulation_dir, "reddit_profiles.json")
-            config_file = os.path.join(simulation_dir, "simulation_config.json")
-            
-            profiles_count = 0
-            if os.path.exists(profiles_file):
-                with open(profiles_file, 'r', encoding='utf-8') as f:
-                    profiles_data = json.load(f)
-                    profiles_count = len(profiles_data) if isinstance(profiles_data, list) else 0
-            
-            # 如果状态是preparing但文件已完成，自动更新状态为ready
-            if status == "preparing":
-                try:
-                    state_data["status"] = "ready"
-                    from datetime import datetime
-                    state_data["updated_at"] = datetime.now().isoformat()
-                    with open(state_file, 'w', encoding='utf-8') as f:
-                        json.dump(state_data, f, ensure_ascii=False, indent=2)
-                    logger.info(f"自动更新模拟状态: {simulation_id} preparing -> ready")
-                    status = "ready"
-                except Exception as e:
-                    logger.warning(f"自动更新状态失败: {e}")
-            
-            logger.info(f"模拟 {simulation_id} 检测结果: 已准备完成 (status={status}, config_generated={config_generated})")
-            return True, {
-                "status": status,
-                "entities_count": state_data.get("entities_count", 0),
-                "profiles_count": profiles_count,
-                "entity_types": state_data.get("entity_types", []),
-                "config_generated": config_generated,
-                "created_at": state_data.get("created_at"),
-                "updated_at": state_data.get("updated_at"),
-                "existing_files": existing_files
-            }
-        else:
-            logger.warning(f"模拟 {simulation_id} 检测结果: 未准备完成 (status={status}, config_generated={config_generated})")
-            return False, {
-                "reason": f"状态不在已准备列表中或config_generated为false: status={status}, config_generated={config_generated}",
-                "status": status,
-                "config_generated": config_generated
-            }
-            
-    except Exception as e:
-        return False, {"reason": f"读取状态文件失败: {str(e)}"}
 
 
 @simulation_bp.route('/prepare', methods=['POST'])
@@ -404,9 +269,7 @@ def prepare_simulation():
         }
     """
     import threading
-    import os
     from ..models.task import TaskManager, TaskStatus
-    from ..config import Config
     
     try:
         data = request.get_json() or {}
@@ -640,8 +503,7 @@ def prepare_simulation():
         logger.error(f"启动准备任务失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -786,8 +648,7 @@ def get_simulation(simulation_id: str):
         logger.error(f"获取模拟状态失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -815,68 +676,8 @@ def list_simulations():
         logger.error(f"列出模拟失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
-
-
-def _get_report_id_for_simulation(simulation_id: str) -> str:
-    """
-    获取 simulation 对应的最新 report_id
-    
-    遍历 reports 目录，找出 simulation_id 匹配的 report，
-    如果有多个则返回最新的（按 created_at 排序）
-    
-    Args:
-        simulation_id: 模拟ID
-        
-    Returns:
-        report_id 或 None
-    """
-    import json
-    from datetime import datetime
-    
-    # reports 目录路径：backend/uploads/reports
-    # __file__ 是 app/api/simulation.py，需要向上两级到 backend/
-    reports_dir = os.path.join(os.path.dirname(__file__), '../../uploads/reports')
-    if not os.path.exists(reports_dir):
-        return None
-    
-    matching_reports = []
-    
-    try:
-        for report_folder in os.listdir(reports_dir):
-            report_path = os.path.join(reports_dir, report_folder)
-            if not os.path.isdir(report_path):
-                continue
-            
-            meta_file = os.path.join(report_path, "meta.json")
-            if not os.path.exists(meta_file):
-                continue
-            
-            try:
-                with open(meta_file, 'r', encoding='utf-8') as f:
-                    meta = json.load(f)
-                
-                if meta.get("simulation_id") == simulation_id:
-                    matching_reports.append({
-                        "report_id": meta.get("report_id"),
-                        "created_at": meta.get("created_at", ""),
-                        "status": meta.get("status", "")
-                    })
-            except Exception:
-                continue
-        
-        if not matching_reports:
-            return None
-        
-        # 按创建时间倒序排序，返回最新的
-        matching_reports.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        return matching_reports[0].get("report_id")
-        
-    except Exception as e:
-        logger.warning(f"查找 simulation {simulation_id} 的 report 失败: {e}")
-        return None
 
 
 @simulation_bp.route('/history', methods=['GET'])
@@ -988,8 +789,7 @@ def get_simulation_history():
         logger.error(f"获取历史模拟失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1026,8 +826,7 @@ def get_simulation_profiles(simulation_id: str):
         logger.error(f"获取Profile失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1140,8 +939,7 @@ def get_simulation_profiles_realtime(simulation_id: str):
         logger.error(f"实时获取Profile失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1264,8 +1062,7 @@ def get_simulation_config_realtime(simulation_id: str):
         logger.error(f"实时获取Config失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1300,8 +1097,7 @@ def get_simulation_config(simulation_id: str):
         logger.error(f"获取配置失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1329,8 +1125,7 @@ def download_simulation_config(simulation_id: str):
         logger.error(f"下载配置失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1381,8 +1176,7 @@ def download_simulation_script(script_name: str):
         logger.error(f"下载脚本失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1455,8 +1249,7 @@ def generate_profiles():
         logger.error(f"生成Profile失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1650,8 +1443,7 @@ def start_simulation():
         logger.error(f"启动模拟失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1709,8 +1501,7 @@ def stop_simulation():
         logger.error(f"停止模拟失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1769,8 +1560,7 @@ def get_run_status(simulation_id: str):
         logger.error(f"获取运行状态失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1870,8 +1660,7 @@ def get_run_status_detail(simulation_id: str):
         logger.error(f"获取详细状态失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1924,8 +1713,7 @@ def get_simulation_actions(simulation_id: str):
         logger.error(f"获取动作历史失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1964,8 +1752,7 @@ def get_simulation_timeline(simulation_id: str):
         logger.error(f"获取时间线失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -1991,8 +1778,7 @@ def get_agent_stats(simulation_id: str):
         logger.error(f"获取Agent统计失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -2071,8 +1857,7 @@ def get_simulation_posts(simulation_id: str):
         logger.error(f"获取帖子失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -2146,8 +1931,7 @@ def get_simulation_comments(simulation_id: str):
         logger.error(f"获取评论失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -2277,8 +2061,7 @@ def interview_agent():
         logger.error(f"Interview失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -2415,8 +2198,7 @@ def interview_agents_batch():
         logger.error(f"批量Interview失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -2518,8 +2300,7 @@ def interview_all_agents():
         logger.error(f"全局Interview失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -2590,8 +2371,7 @@ def get_interview_history():
         logger.error(f"获取Interview历史失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -2655,8 +2435,7 @@ def get_env_status():
         logger.error(f"获取环境状态失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -2725,6 +2504,5 @@ def close_simulation_env():
         logger.error(f"关闭环境失败: {str(e)}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500

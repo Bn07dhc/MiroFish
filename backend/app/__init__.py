@@ -97,6 +97,14 @@ def create_app(config_class=Config):
     app.register_blueprint(graph_bp, url_prefix='/api/graph')
     app.register_blueprint(simulation_bp, url_prefix='/api/simulation')
     app.register_blueprint(report_bp, url_prefix='/api/report')
+
+    # 在蓝图注册之后挂载 API 认证 + 速率限制（仅对 /api/* 生效，/health 除外）
+    from .utils.auth import install_auth_and_rate_limit
+    install_auth_and_rate_limit(app)
+
+    # 全局错误处理：兜底任何未被捕获的异常，避免堆栈/路径泄漏到客户端
+    from .utils.errors import register_error_handlers
+    register_error_handlers(app)
     
     # 健康检查
     @app.route('/health')

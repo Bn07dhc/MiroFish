@@ -248,10 +248,14 @@ def generate_ontology():
         })
         
     except Exception as e:
+        # 详细堆栈仅写入服务器日志；客户端只看到通用错误，避免内部信息泄漏
+        logger.error(
+            f"{request.method} {request.path} 失败: {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}"
+        )
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -522,10 +526,14 @@ def build_graph():
         })
         
     except Exception as e:
+        # 详细堆栈仅写入服务器日志；客户端只看到通用错误，避免内部信息泄漏
+        logger.error(
+            f"{request.method} {request.path} 失败: {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}"
+        )
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -587,10 +595,14 @@ def get_graph_data(graph_id: str):
         })
         
     except Exception as e:
+        # 详细堆栈仅写入服务器日志；客户端只看到通用错误，避免内部信息泄漏
+        logger.error(
+            f"{request.method} {request.path} 失败: {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}"
+        )
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500
 
 
@@ -615,8 +627,12 @@ def delete_graph(graph_id: str):
         })
         
     except Exception as e:
+        # 详细堆栈仅写入服务器日志；客户端只看到通用错误，避免内部信息泄漏
+        logger.error(
+            f"{request.method} {request.path} 失败: {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}"
+        )
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": "Internal server error"
         }), 500

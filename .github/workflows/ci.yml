@@ -1,0 +1,120 @@
+name: CI
+
+# Lint, security scan, and basic tests on every push and PR.
+# Kept fast and dependency-light so it runs as a pre-merge gate; the existing
+# docker-image.yml workflow continues to handle release builds on tags.
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python-lint:
+    name: Python lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install --upgrade pip ruff==0.6.9
+
+      - name: Run ruff (critical bugs only - hard gate)
+        # Hard gate: only block on real bugs (syntax errors, undefined names,
+        # invalid string formatting). Style/pattern warnings are reported in
+        # the next step but do not fail the build, since the existing
+        # codebase has a pre-existing baseline that should be cleaned
+        # incrementally rather than blocking new work.
+        run: |
+          ruff check backend/app \
+            --select E9,F63,F7,F82 \
+            --output-format=github
+
+      - name: Ruff style & pattern warnings (advisory, non-blocking)
+        if: always()
+        continue-on-error: true
+        run: |
+          ruff check backend/app \
+            --select E,F,B,C4 \
+            --ignore E501,E402,B008 \
+            --statistics || true
+
+  python-security:
+    name: Python security scan (bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install bandit
+        run: pip install --upgrade pip "bandit[toml]==1.7.10"
+
+      - name: Run bandit
+        # Skip B101 (assert_used) - acceptable in helper code.
+        # Skip B404/B603 (subprocess) - simulation_runner intentionally spawns
+        # subprocesses; inputs are now validated via utils/validators.py.
+        run: |
+          bandit -r backend/app \
+            -ll \
+            --skip B101,B404,B603 \
+            --format screen
+
+  python-tests:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        # Tests intentionally only cover pure utility modules; we install only
+        # the lightweight Flask + dotenv packages they touch (avoiding the
+        # heavy LLM/OASIS/Zep stack).
+        run: |
+          pip install --upgrade pip
+          pip install pytest "flask>=3.0.0" "flask-cors>=6.0.0" "python-dotenv>=1.0.0"
+
+      - name: Run pytest
+        run: pytest backend/tests -q
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        # Use install (not ci) because the lockfile may not be present in
+        # this branch; CI hardening can later switch to npm ci.
+        run: npm install --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
