@@ -13,6 +13,7 @@ from ..services.simulation_manager import SimulationManager
 from ..models.project import ProjectManager
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
+from ..utils.validators import clamp_int
 from ..utils.locale import t, get_locale, set_locale
 
 logger = get_logger('mirofish.api.report')
@@ -368,7 +369,7 @@ def list_reports():
     """
     try:
         simulation_id = request.args.get('simulation_id')
-        limit = request.args.get('limit', 50, type=int)
+        limit = clamp_int(request.args.get('limit'), default=50, minimum=1, maximum=500)
         
         reports = ReportManager.list_reports(
             simulation_id=simulation_id,
@@ -783,7 +784,7 @@ def get_agent_log(report_id: str):
         }
     """
     try:
-        from_line = request.args.get('from_line', 0, type=int)
+        from_line = clamp_int(request.args.get('from_line'), default=0, minimum=0, maximum=10000000)
         
         log_data = ReportManager.get_agent_log(report_id, from_line=from_line)
         
@@ -863,7 +864,7 @@ def get_console_log(report_id: str):
         }
     """
     try:
-        from_line = request.args.get('from_line', 0, type=int)
+        from_line = clamp_int(request.args.get('from_line'), default=0, minimum=0, maximum=10000000)
         
         log_data = ReportManager.get_console_log(report_id, from_line=from_line)
         

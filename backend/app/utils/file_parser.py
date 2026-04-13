@@ -97,8 +97,8 @@ class FileParser:
         """从PDF提取文本"""
         try:
             import fitz  # PyMuPDF
-        except ImportError:
-            raise ImportError("需要安装PyMuPDF: pip install PyMuPDF")
+        except ImportError as e:
+            raise ImportError("需要安装PyMuPDF: pip install PyMuPDF") from e
         
         text_parts = []
         with fitz.open(file_path) as doc:
@@ -143,46 +143,74 @@ class FileParser:
         return "\n\n".join(all_texts)
 
 
+_CHUNK_SEPARATORS = ('。', '！', '？', '.\n', '!\n', '?\n', '\n\n', '. ', '! ', '? ')
+
+
 def split_text_into_chunks(
-    text: str, 
-    chunk_size: int = 500, 
-    overlap: int = 50
+    text: str,
+    chunk_size: int = 500,
+    overlap: int = 50,
 ) -> List[str]:
-    """
-    将文本分割成小块
-    
+    """将文本按 chunk_size 切块，块间保留 overlap 个字符用于上下文。
+
+    相比之前的实现：
+    - 使用 str.rfind(sep, start, end) 在原串上做切分，省去每轮的 text[start:end]
+      子串拷贝，避免在长文本上产生 O(n·k) 的额外内存/时间
+    - 显式钳制 overlap < chunk_size 并保证每轮至少前进 1 字符，杜绝曾经的
+      overlap >= chunk_size 导致死循环的隐患
+    - 提取句子分隔符为常量元组，避免每次进入循环都重新构造列表
+
     Args:
         text: 原始文本
-        chunk_size: 每块的字符数
-        overlap: 重叠字符数
-        
+        chunk_size: 每块的字符数（必须 > 0）
+        overlap: 相邻块之间的重叠字符数（会被钳制到 [0, chunk_size - 1]）
+
     Returns:
-        文本块列表
+        文本块列表（strip 后非空）
     """
-    if len(text) <= chunk_size:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size 必须大于 0")
+    # overlap 必须严格小于 chunk_size，否则 start 永远不会推进
+    if overlap < 0:
+        overlap = 0
+    if overlap >= chunk_size:
+        overlap = chunk_size - 1
+
+    n = len(text)
+    if n <= chunk_size:
         return [text] if text.strip() else []
-    
-    chunks = []
+
+    chunks: List[str] = []
     start = 0
-    
-    while start < len(text):
+    min_split_offset = int(chunk_size * 0.3)
+
+    while start < n:
         end = start + chunk_size
-        
-        # 尝试在句子边界处分割
-        if end < len(text):
-            # 查找最近的句子结束符
-            for sep in ['。', '！', '？', '.\n', '!\n', '?\n', '\n\n', '. ', '! ', '? ']:
-                last_sep = text[start:end].rfind(sep)
-                if last_sep != -1 and last_sep > chunk_size * 0.3:
-                    end = start + last_sep + len(sep)
+
+        if end < n:
+            # 在 [start, end) 区间内就近向后对齐到句子边界。rfind 接受 start/end
+            # 参数，直接在原串上搜索（无需切片拷贝）。返回值是原串索引，不是
+            # 子串内的相对偏移。
+            for sep in _CHUNK_SEPARATORS:
+                sep_idx = text.rfind(sep, start, end)
+                if sep_idx != -1 and sep_idx - start > min_split_offset:
+                    end = sep_idx + len(sep)
                     break
-        
+        else:
+            end = n
+
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
-        
-        # 下一个块从重叠位置开始
-        start = end - overlap if end < len(text) else len(text)
-    
+
+        if end >= n:
+            break
+
+        # 下一轮起点：至少前进 1 字符，防止因分隔符紧贴 start 而卡死
+        next_start = end - overlap
+        if next_start <= start:
+            next_start = start + 1
+        start = next_start
+
     return chunks
 

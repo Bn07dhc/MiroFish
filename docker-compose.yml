@@ -12,3 +12,18 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend/uploads:/app/backend/uploads
+      - ./backend/logs:/app/backend/logs
+    # 容器内的 Dockerfile 已声明 HEALTHCHECK；此处显式重申确保 compose 也可见
+    # 容器状态，方便编排系统判断 ready（取决于后端 /health 与前端静态可达）。
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5001/health && curl -fsS http://localhost:3000/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    # 限制日志驱动的最大占用，避免单个容器日志写满磁盘。
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

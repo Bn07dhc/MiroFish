@@ -21,3 +21,9 @@ frontend/dist
 frontend/.vite
 
 backend/uploads
+backend/logs
+backend/tests
+Dockerfile.dev
+*.md
+!README.md
+!README-ZH.md

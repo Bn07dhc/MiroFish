@@ -26,7 +26,7 @@ from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
-from ..utils.validators import validate_safe_identifier, safe_join
+from ..utils.validators import validate_safe_identifier, safe_join, clamp_int
 from ..models.project import ProjectManager
 from ._simulation_helpers import (
     optimize_interview_prompt,
@@ -716,7 +716,7 @@ def get_simulation_history():
         }
     """
     try:
-        limit = request.args.get('limit', 20, type=int)
+        limit = clamp_int(request.args.get('limit'), default=20, minimum=1, maximum=500)
         
         manager = SimulationManager()
         simulations = manager.list_simulations()[:limit]
@@ -774,7 +774,7 @@ def get_simulation_history():
             try:
                 created_date = sim_dict.get("created_at", "")[:10]
                 sim_dict["created_date"] = created_date
-            except:
+            except (TypeError, IndexError):
                 sim_dict["created_date"] = ""
             
             enriched_simulations.append(sim_dict)
@@ -1686,8 +1686,8 @@ def get_simulation_actions(simulation_id: str):
         }
     """
     try:
-        limit = request.args.get('limit', 100, type=int)
-        offset = request.args.get('offset', 0, type=int)
+        limit = clamp_int(request.args.get('limit'), default=100, minimum=1, maximum=500)
+        offset = clamp_int(request.args.get('offset'), default=0, minimum=0, maximum=1000000)
         platform = request.args.get('platform')
         agent_id = request.args.get('agent_id', type=int)
         round_num = request.args.get('round_num', type=int)
@@ -1731,7 +1731,7 @@ def get_simulation_timeline(simulation_id: str):
     返回每轮的汇总信息
     """
     try:
-        start_round = request.args.get('start_round', 0, type=int)
+        start_round = clamp_int(request.args.get('start_round'), default=0, minimum=0, maximum=1000000)
         end_round = request.args.get('end_round', type=int)
         
         timeline = SimulationRunner.get_timeline(
@@ -1798,8 +1798,8 @@ def get_simulation_posts(simulation_id: str):
     """
     try:
         platform = request.args.get('platform', 'reddit')
-        limit = request.args.get('limit', 50, type=int)
-        offset = request.args.get('offset', 0, type=int)
+        limit = clamp_int(request.args.get('limit'), default=50, minimum=1, maximum=500)
+        offset = clamp_int(request.args.get('offset'), default=0, minimum=0, maximum=1000000)
         
         sim_dir = os.path.join(
             os.path.dirname(__file__),
@@ -1873,8 +1873,8 @@ def get_simulation_comments(simulation_id: str):
     """
     try:
         post_id = request.args.get('post_id')
-        limit = request.args.get('limit', 50, type=int)
-        offset = request.args.get('offset', 0, type=int)
+        limit = clamp_int(request.args.get('limit'), default=50, minimum=1, maximum=500)
+        offset = clamp_int(request.args.get('offset'), default=0, minimum=0, maximum=1000000)
         
         sim_dir = os.path.join(
             os.path.dirname(__file__),

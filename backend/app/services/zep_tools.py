@@ -74,7 +74,7 @@ class NodeInfo:
     
     def to_text(self) -> str:
         """转换为文本格式"""
-        entity_type = next((l for l in self.labels if l not in ["Entity", "Node"]), "未知类型")
+        entity_type = next((lbl for lbl in self.labels if lbl not in ["Entity", "Node"]), "未知类型")
         return f"实体: {self.name} (类型: {entity_type})\n摘要: {self.summary}"
 
 
@@ -275,7 +275,7 @@ class PanoramaResult:
         if self.all_nodes:
             text_parts.append("\n### 【涉及实体】")
             for node in self.all_nodes:
-                entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "实体")
+                entity_type = next((lbl for lbl in node.labels if lbl not in ["Entity", "Node"]), "实体")
                 text_parts.append(f"- **{node.name}** ({entity_type})")
         
         return "\n".join(text_parts)
@@ -602,7 +602,7 @@ class ZepToolsService:
                 # 按分数排序
                 scored_edges.sort(key=lambda x: x[0], reverse=True)
                 
-                for score, edge in scored_edges[:limit]:
+                for _score, edge in scored_edges[:limit]:
                     if edge.fact:
                         facts.append(edge.fact)
                     edges_result.append({
@@ -624,7 +624,7 @@ class ZepToolsService:
                 
                 scored_nodes.sort(key=lambda x: x[0], reverse=True)
                 
-                for score, node in scored_nodes[:limit]:
+                for _score, node in scored_nodes[:limit]:
                     nodes_result.append({
                         "uuid": node.uuid,
                         "name": node.name,
@@ -924,7 +924,7 @@ class ZepToolsService:
         # 筛选有实际类型的实体（非纯Entity节点）
         entities = []
         for node in all_nodes:
-            custom_labels = [l for l in node.labels if l not in ["Entity", "Node"]]
+            custom_labels = [lbl for lbl in node.labels if lbl not in ["Entity", "Node"]]
             if custom_labels:
                 entities.append({
                     "name": node.name,
@@ -1046,7 +1046,7 @@ class ZepToolsService:
                 node = self.get_node_detail(uuid)
                 if node:
                     node_map[uuid] = node
-                    entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "实体")
+                    entity_type = next((lbl for lbl in node.labels if lbl not in ["Entity", "Node"]), "实体")
                     
                     # 获取该实体相关的所有事实（不截断）
                     related_facts = [
@@ -1174,7 +1174,6 @@ class ZepToolsService:
         
         # 获取所有节点
         all_nodes = self.get_all_nodes(graph_id)
-        node_map = {n.uuid: n for n in all_nodes}
         result.all_nodes = all_nodes
         result.total_nodes = len(all_nodes)
         
@@ -1190,10 +1189,6 @@ class ZepToolsService:
         for edge in all_edges:
             if not edge.fact:
                 continue
-            
-            # 为事实添加实体名称
-            source_name = node_map.get(edge.source_node_uuid, NodeInfo('', '', [], '', {})).name or edge.source_node_uuid[:8]
-            target_name = node_map.get(edge.target_node_uuid, NodeInfo('', '', [], '', {})).name or edge.target_node_uuid[:8]
             
             # 判断是否过期/失效
             is_historical = edge.is_expired or edge.is_invalid

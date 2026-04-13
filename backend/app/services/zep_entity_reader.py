@@ -253,7 +253,7 @@ class ZepEntityReader:
             labels = node.get("labels", [])
             
             # 筛选逻辑：Labels必须包含除"Entity"和"Node"之外的标签
-            custom_labels = [l for l in labels if l not in ["Entity", "Node"]]
+            custom_labels = [lbl for lbl in labels if lbl not in ["Entity", "Node"]]
             
             if not custom_labels:
                 # 只有默认标签，跳过
@@ -261,7 +261,7 @@ class ZepEntityReader:
             
             # 如果指定了预定义类型，检查是否匹配
             if defined_entity_types:
-                matching_labels = [l for l in custom_labels if l in defined_entity_types]
+                matching_labels = [lbl for lbl in custom_labels if lbl in defined_entity_types]
                 if not matching_labels:
                     continue
                 entity_type = matching_labels[0]

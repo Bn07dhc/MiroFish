@@ -98,6 +98,6 @@ class LLMClient:
 
         try:
             return json.loads(cleaned_response)
-        except json.JSONDecodeError:
-            raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}") from e
 

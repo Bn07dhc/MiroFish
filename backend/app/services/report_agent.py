@@ -1648,14 +1648,16 @@ class ReportAgent:
                     )
                 
                 # 生成主章节内容
+                # Bind base_progress via default arg so the lambda captures the
+                # current iteration value rather than the final one (B023).
                 section_content = self._generate_section_react(
                     section=section,
                     outline=outline,
                     previous_sections=generated_sections,
-                    progress_callback=lambda stage, prog, msg:
+                    progress_callback=lambda stage, prog, msg, _bp=base_progress:
                         progress_callback(
                             stage, 
-                            base_progress + int(prog * 0.7 / total_sections),
+                            _bp + int(prog * 0.7 / total_sections),
                             msg
                         ) if progress_callback else None,
                     section_index=section_num
@@ -1819,7 +1821,7 @@ class ReportAgent:
         tool_calls_made = []
         max_iterations = 2  # 减少迭代轮数
         
-        for iteration in range(max_iterations):
+        for _iteration in range(max_iterations):
             response = self.llm.chat(
                 messages=messages,
                 temperature=0.5
@@ -2155,7 +2157,6 @@ class ReportManager:
             heading_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
             
             if heading_match:
-                level = len(heading_match.group(1))
                 title_text = heading_match.group(2).strip()
                 
                 # 检查是否是与章节标题重复的标题（跳过前5行内的重复）
@@ -2269,8 +2270,6 @@ class ReportManager:
         
         从已保存的章节文件组装完整报告，并进行标题清理
         """
-        folder = cls._get_report_folder(report_id)
-        
         # 构建报告头部
         md_content = f"# {outline.title}\n\n"
         md_content += f"> {outline.summary}\n\n"

@@ -41,14 +41,26 @@ class GraphBuilderService:
     图谱构建服务
     负责调用Zep API构建知识图谱
     """
-    
+
+    # 类级 TTL 缓存，所有 GraphBuilderService 实例共享。
+    # 场景：前端在 step2/step3 页面会重复轮询 /api/graph/data/<id>；
+    # 单次图谱读取包含两次大 Zep 查询（nodes + edges，可能各有分页），
+    # 30 秒内同一 graph_id 的重复读请求直接返回缓存结果。
+    from ..utils.ttl_cache import TTLCache as _TTLCache
+    _graph_cache = _TTLCache(ttl_seconds=30.0, max_size=64)
+
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or Config.ZEP_API_KEY
         if not self.api_key:
             raise ValueError("ZEP_API_KEY 未配置")
-        
+
         self.client = Zep(api_key=self.api_key)
         self.task_manager = TaskManager()
+
+    @classmethod
+    def invalidate_graph_cache(cls, graph_id: str) -> None:
+        """图谱发生写入后调用，避免短时间内读取到陈旧数据。"""
+        cls._graph_cache.invalidate(('get_graph_data', graph_id))
     
     def build_graph_async(
         self,
@@ -430,13 +442,24 @@ class GraphBuilderService:
     def get_graph_data(self, graph_id: str) -> Dict[str, Any]:
         """
         获取完整图谱数据（包含详细信息）
-        
+
         Args:
             graph_id: 图谱ID
-            
+
         Returns:
             包含nodes和edges的字典，包括时间信息、属性等详细数据
+
+        缓存行为：同一 graph_id 的结果会被缓存 30 秒（见 _graph_cache）。
+        图谱写入后请调用 GraphBuilderService.invalidate_graph_cache(graph_id)。
         """
+        cached = self._graph_cache.get(('get_graph_data', graph_id))
+        if cached is not None:
+            return cached
+        result = self._compute_graph_data(graph_id)
+        self._graph_cache.set(('get_graph_data', graph_id), result)
+        return result
+
+    def _compute_graph_data(self, graph_id: str) -> Dict[str, Any]:
         nodes = fetch_all_nodes(self.client, graph_id)
         edges = fetch_all_edges(self.client, graph_id)
 

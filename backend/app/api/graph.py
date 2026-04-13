@@ -16,6 +16,7 @@ from ..services.text_processor import TextProcessor
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
+from ..utils.validators import validate_upload_content, clamp_int
 from ..models.task import TaskManager, TaskStatus
 from ..models.project import ProjectManager, ProjectStatus
 
@@ -57,7 +58,7 @@ def list_projects():
     """
     列出所有项目
     """
-    limit = request.args.get('limit', 50, type=int)
+    limit = clamp_int(request.args.get('limit'), default=50, minimum=1, maximum=500)
     projects = ProjectManager.list_projects(limit=limit)
     
     return jsonify({
@@ -183,10 +184,29 @@ def generate_ontology():
         
         for file in uploaded_files:
             if file and file.filename and allowed_file(file.filename):
+                # 读取首部字节做 magic-number / 内容嗅探，防止扩展名伪装
+                # (e.g. evil.pdf 实际是 ELF/脚本)。读取后 seek 回起点以便保存
+                head = file.stream.read(4096)
+                try:
+                    file.stream.seek(0)
+                except (OSError, ValueError):
+                    # 理论上 Werkzeug 上传流支持 seek；若不支持则只能重建为内存流
+                    import io
+                    rest = file.stream.read()
+                    file.stream = io.BytesIO(head + rest)
+                ext = os.path.splitext(file.filename)[1].lower().lstrip('.')
+                try:
+                    validate_upload_content(head, ext)
+                except ValueError as e:
+                    logger.warning(
+                        f"拒绝上传文件 {file.filename}: {e}"
+                    )
+                    continue
+
                 # 保存文件到项目目录
                 file_info = ProjectManager.save_file_to_project(
-                    project.project_id, 
-                    file, 
+                    project.project_id,
+                    file,
                     file.filename
                 )
                 project.files.append({
@@ -340,11 +360,22 @@ def build_graph():
             project.graph_build_task_id = None
             project.error = None
         
-        # 获取配置
+        # 获取配置并对 chunk 参数做边界钳制，防止恶意/错误值触发 O(n) 内存尖峰
+        # 或除零（如 chunk_overlap >= chunk_size 会导致切块永不前进）
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
-        chunk_size = data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE)
-        chunk_overlap = data.get('chunk_overlap', project.chunk_overlap or Config.DEFAULT_CHUNK_OVERLAP)
-        
+        chunk_size = clamp_int(
+            data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE),
+            default=Config.DEFAULT_CHUNK_SIZE,
+            minimum=50,
+            maximum=10_000,
+        )
+        chunk_overlap = clamp_int(
+            data.get('chunk_overlap', project.chunk_overlap or Config.DEFAULT_CHUNK_OVERLAP),
+            default=Config.DEFAULT_CHUNK_OVERLAP,
+            minimum=0,
+            maximum=max(0, chunk_size - 1),
+        )
+
         # 更新项目配置
         project.chunk_size = chunk_size
         project.chunk_overlap = chunk_overlap

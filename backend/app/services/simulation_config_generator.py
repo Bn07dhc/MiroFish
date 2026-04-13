@@ -520,13 +520,13 @@ class SimulationConfigGenerator:
             
             try:
                 return json.loads(json_str)
-            except:
+            except json.JSONDecodeError:
                 # 尝试移除所有控制字符
                 json_str = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', json_str)
                 json_str = re.sub(r'\s+', ' ', json_str)
                 try:
                     return json.loads(json_str)
-                except:
+                except json.JSONDecodeError:
                     pass
         
         return None
@@ -649,11 +649,6 @@ class SimulationConfigGenerator:
         entities: List[EntityNode]
     ) -> Dict[str, Any]:
         """生成事件配置"""
-        
-        # 获取可用的实体类型列表，供 LLM 参考
-        entity_types_available = list(set(
-            e.get_entity_type() or "Unknown" for e in entities
-        ))
         
         # 为每种类型列出代表性实体名称
         type_examples = {}

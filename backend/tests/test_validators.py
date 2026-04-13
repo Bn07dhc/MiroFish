@@ -15,6 +15,7 @@ from app.utils.validators import (
     safe_join,
     validate_int_range,
     validate_safe_identifier,
+    validate_upload_content,
 )
 
 
@@ -85,3 +86,32 @@ class TestValidateIntRange:
     def test_non_integer(self):
         with pytest.raises(ValueError):
             validate_int_range('abc', 'limit')
+
+
+class TestValidateUploadContent:
+    def test_accepts_real_pdf_magic_number(self):
+        validate_upload_content(b'%PDF-1.7\n%\xe2\xe3\xcf\xd3', 'pdf')
+
+    def test_rejects_elf_disguised_as_pdf(self):
+        # ELF magic = 0x7F 'E' 'L' 'F'
+        with pytest.raises(ValueError):
+            validate_upload_content(b'\x7fELF\x02\x01\x01\x00', 'pdf')
+
+    def test_rejects_zip_disguised_as_pdf(self):
+        with pytest.raises(ValueError):
+            validate_upload_content(b'PK\x03\x04', 'pdf')
+
+    def test_accepts_plain_text_md(self):
+        validate_upload_content(b'# Heading\n\nhello world\n', 'md')
+
+    def test_rejects_binary_disguised_as_text(self):
+        with pytest.raises(ValueError):
+            validate_upload_content(b'# Heading\x00\x00not text', 'txt')
+
+    def test_rejects_unknown_extension(self):
+        with pytest.raises(ValueError):
+            validate_upload_content(b'any content', 'exe')
+
+    def test_rejects_empty_extension(self):
+        with pytest.raises(ValueError):
+            validate_upload_content(b'any content', '')

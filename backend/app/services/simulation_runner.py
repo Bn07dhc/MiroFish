@@ -1259,7 +1259,7 @@ class SimulationRunner:
                 logger.error(f"清理进程失败: {simulation_id}, error={e}")
         
         # 清理文件句柄
-        for simulation_id, file_handle in list(cls._stdout_files.items()):
+        for _simulation_id, file_handle in list(cls._stdout_files.items()):
             try:
                 if file_handle:
                     file_handle.close()
@@ -1267,7 +1267,7 @@ class SimulationRunner:
                 pass
         cls._stdout_files.clear()
         
-        for simulation_id, file_handle in list(cls._stderr_files.items()):
+        for _simulation_id, file_handle in list(cls._stderr_files.items()):
             try:
                 if file_handle:
                     file_handle.close()
