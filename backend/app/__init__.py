@@ -39,8 +39,12 @@ def create_app(config_class=Config):
         logger.info("MiroFish Backend 启动中...")
         logger.info("=" * 50)
     
-    # 启用CORS
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # 启用CORS - 仅允许 ALLOWED_ORIGINS 中显式列出的来源
+    # 之前默认 origins="*" 允许任意域名访问 API，存在 CSRF 与凭据滥用风险
+    allowed_origins = app.config.get('ALLOWED_ORIGINS') or ['http://localhost:5173']
+    CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
+    if should_log_startup:
+        logger.info(f"CORS 允许的来源: {allowed_origins}")
     
     # 注册模拟进程清理函数（确保服务器关闭时终止所有模拟进程）
     from .services.simulation_runner import SimulationRunner
@@ -48,13 +52,39 @@ def create_app(config_class=Config):
     if should_log_startup:
         logger.info("已注册模拟进程清理函数")
     
+    # 敏感字段名（大小写不敏感子串匹配）；命中后在日志中以 *** 替代
+    _SENSITIVE_KEY_FRAGMENTS = (
+        'password', 'token', 'secret', 'api_key', 'apikey',
+        'authorization', 'auth', 'cookie', 'session',
+    )
+
+    def _sanitize_for_log(value, depth: int = 0):
+        """递归地脱敏字典/列表中的敏感字段，并截断过长字符串。"""
+        if depth > 4:
+            return '<truncated:depth>'
+        if isinstance(value, dict):
+            return {
+                k: ('***'
+                    if isinstance(k, str) and any(f in k.lower() for f in _SENSITIVE_KEY_FRAGMENTS)
+                    else _sanitize_for_log(v, depth + 1))
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            # 仅记录前 20 项，避免日志被超长列表淹没
+            return [_sanitize_for_log(v, depth + 1) for v in value[:20]]
+        if isinstance(value, str) and len(value) > 500:
+            return value[:500] + f'...<truncated {len(value) - 500} chars>'
+        return value
+
     # 请求日志中间件
     @app.before_request
     def log_request():
         logger = get_logger('mirofish.request')
         logger.debug(f"请求: {request.method} {request.path}")
         if request.content_type and 'json' in request.content_type:
-            logger.debug(f"请求体: {request.get_json(silent=True)}")
+            body = request.get_json(silent=True)
+            if body is not None:
+                logger.debug(f"请求体: {_sanitize_for_log(body)}")
     
     @app.after_request
     def log_response(response):

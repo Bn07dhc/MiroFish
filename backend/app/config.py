@@ -4,6 +4,7 @@
 """
 
 import os
+import secrets
 from dotenv import load_dotenv
 
 # 加载项目根目录的 .env 文件
@@ -17,12 +18,52 @@ else:
     load_dotenv(override=True)
 
 
+def _resolve_secret_key() -> str:
+    """解析 SECRET_KEY 配置。
+
+    生产环境必须显式设置 SECRET_KEY；若仅用于本地开发（FLASK_DEBUG=True）且
+    未提供，则生成一个进程内的临时随机密钥并发出警告，避免用户沿用可预测的
+    默认值（曾经的 'mirofish-secret-key'）。
+    """
+    key = os.environ.get('SECRET_KEY')
+    if key:
+        return key
+
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    if debug:
+        # 开发模式下生成临时密钥（每次进程启动都不同），避免使用公开的硬编码默认值
+        import warnings
+        warnings.warn(
+            "SECRET_KEY 未设置，已在开发模式下生成临时随机密钥。"
+            "请在 .env 中显式设置 SECRET_KEY 用于生产部署。",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return secrets.token_urlsafe(48)
+
+    raise RuntimeError(
+        "SECRET_KEY 环境变量必须显式设置（生产环境禁止使用默认值）。"
+        "请在 .env 中配置 SECRET_KEY。"
+    )
+
+
 class Config:
     """Flask配置类"""
-    
-    # Flask配置
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'mirofish-secret-key')
-    DEBUG = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
+
+    # Flask配置 - DEBUG 默认 False，避免生产环境意外暴露调试器与堆栈信息
+    DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    SECRET_KEY = _resolve_secret_key()
+
+    # CORS 配置：逗号分隔的允许来源列表；默认仅允许本地开发端口
+    # 例如：ALLOWED_ORIGINS=https://app.example.com,https://staging.example.com
+    ALLOWED_ORIGINS = [
+        origin.strip()
+        for origin in os.environ.get(
+            'ALLOWED_ORIGINS',
+            'http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000'
+        ).split(',')
+        if origin.strip()
+    ]
     
     # JSON配置 - 禁用ASCII转义，让中文直接显示（而不是 \uXXXX 格式）
     JSON_AS_ASCII = False

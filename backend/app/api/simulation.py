@@ -15,6 +15,7 @@ from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
+from ..utils.validators import validate_safe_identifier, safe_join
 from ..models.project import ProjectManager
 
 logger = get_logger('mirofish.api.simulation')
@@ -255,9 +256,14 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
     """
     import os
     from ..config import Config
-    
-    simulation_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
-    
+
+    # 防止路径穿越：拒绝包含 '/'、'..'、空字节等非法字符的 simulation_id
+    try:
+        validate_safe_identifier(simulation_id, field_name='simulation_id')
+        simulation_dir = safe_join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
+    except ValueError as e:
+        return False, {"reason": f"非法的 simulation_id: {e}"}
+
     # 检查目录是否存在
     if not os.path.exists(simulation_dir):
         return False, {"reason": "模拟目录不存在"}
@@ -1059,16 +1065,20 @@ def get_simulation_profiles_realtime(simulation_id: str):
     
     try:
         platform = request.args.get('platform', 'reddit')
-        
-        # 获取模拟目录
-        sim_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
-        
+
+        # 获取模拟目录（防路径穿越）
+        try:
+            validate_safe_identifier(simulation_id, field_name='simulation_id')
+            sim_dir = safe_join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+
         if not os.path.exists(sim_dir):
             return jsonify({
                 "success": False,
                 "error": t('api.simulationNotFound', id=simulation_id)
             }), 404
-        
+
         # 确定文件路径
         if platform == "reddit":
             profiles_file = os.path.join(sim_dir, "reddit_profiles.json")
@@ -1163,9 +1173,13 @@ def get_simulation_config_realtime(simulation_id: str):
     from datetime import datetime
     
     try:
-        # 获取模拟目录
-        sim_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
-        
+        # 获取模拟目录（防路径穿越）
+        try:
+            validate_safe_identifier(simulation_id, field_name='simulation_id')
+            sim_dir = safe_join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+
         if not os.path.exists(sim_dir):
             return jsonify({
                 "success": False,
