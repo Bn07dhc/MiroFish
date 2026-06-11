@@ -1425,6 +1425,82 @@ class SimulationRunner:
             return default_status
 
     @classmethod
+    def inject_event(
+        cls,
+        simulation_id: str,
+        content: str,
+        platform: str = None,
+        poster_agent_id: int = None,
+        label: str = None,
+    ) -> Dict[str, Any]:
+        """
+        向运行中的模拟注入一次"上帝视角"干预（突发新闻/政策变量等）。
+
+        干预以帖子形式在下一轮（或等待阶段的下一次轮询）被发布到环境中，使其对
+        agent 可见，从而影响后续的群体演化。运行中（RUNNING）和模拟完成后的
+        等待阶段（环境存活）均可注入。
+
+        Args:
+            simulation_id: 模拟ID
+            content: 帖子正文
+            platform: 目标平台 twitter/reddit/both（默认 both）
+            poster_agent_id: 发帖 agent id（可选，缺省由引擎选择）
+            label: 备注标签（可选，用于日志/报告标注）
+
+        Returns:
+            ``{"success": True, "intervention_id": ..., "platforms": [...]}``
+
+        Raises:
+            ValueError: 模拟不存在、内容为空、平台非法或环境未运行
+        """
+        if not (content or "").strip():
+            raise ValueError("干预内容不能为空")
+
+        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        if not os.path.exists(sim_dir):
+            raise ValueError(f"模拟不存在: {simulation_id}")
+
+        # 运行中或等待阶段（环境存活）均可注入
+        state = cls.get_run_state(simulation_id)
+        is_running = state is not None and state.runner_status in (
+            RunnerStatus.RUNNING, RunnerStatus.STARTING
+        )
+        env_alive = SimulationIPCClient(sim_dir).check_env_alive()
+        if not (is_running or env_alive):
+            raise ValueError(f"模拟环境未运行，无法注入干预: {simulation_id}")
+
+        events = cls._load_simulation_events()
+        try:
+            intervention_id, targets = events.queue_intervention(
+                simulation_dir=sim_dir,
+                content=content,
+                platform=platform,
+                poster_agent_id=poster_agent_id,
+                label=label,
+            )
+        except ValueError as e:
+            raise ValueError(str(e))
+
+        logger.info(
+            f"已排入干预: simulation_id={simulation_id}, id={intervention_id}, "
+            f"platforms={targets}"
+        )
+        return {
+            "success": True,
+            "intervention_id": intervention_id,
+            "platforms": targets,
+        }
+
+    @staticmethod
+    def _load_simulation_events():
+        """延迟导入 scripts/simulation_events.py（与模拟脚本共享同一实现）。"""
+        scripts_dir = os.path.abspath(SimulationRunner.SCRIPTS_DIR)
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import simulation_events
+        return simulation_events
+
+    @classmethod
     def interview_agent(
         cls,
         simulation_id: str,

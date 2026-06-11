@@ -2139,6 +2139,92 @@ def get_simulation_comments(simulation_id: str):
 
 # ============== Interview 采访接口 ==============
 
+@simulation_bp.route('/<simulation_id>/intervention', methods=['POST'])
+def inject_intervention(simulation_id):
+    """
+    注入"上帝视角"干预 (God's-eye-view intervention)
+
+    向运行中的模拟动态注入一条帖子（突发新闻、政策变量、外部冲击等），使其在
+    下一轮对 agent 可见，从而影响后续的群体演化。运行中或模拟完成后的等待阶段
+    （环境存活）均可注入。
+
+    请求（JSON）：
+        {
+            "content": "突发：……",      // 必填，注入的帖子正文
+            "platform": "both",          // 可选，twitter/reddit/both，默认 both
+            "poster_agent_id": 0,        // 可选，发帖 agent；缺省由引擎选择
+            "label": "政策变量"           // 可选，备注标签（用于日志/报告标注）
+        }
+
+    返回：
+        {
+            "success": true,
+            "data": {
+                "intervention_id": "abc123",
+                "platforms": ["twitter", "reddit"]
+            }
+        }
+    """
+    try:
+        data = request.get_json() or {}
+
+        content = (data.get('content') or '').strip()
+        platform = data.get('platform')  # twitter/reddit/both/None
+        poster_agent_id = data.get('poster_agent_id')
+        label = data.get('label')
+
+        if not content:
+            return jsonify({
+                "success": False,
+                "error": t('api.requireInterventionContent')
+            }), 400
+
+        if platform is not None and platform not in ("twitter", "reddit", "both"):
+            return jsonify({
+                "success": False,
+                "error": t('api.invalidInterventionPlatform')
+            }), 400
+
+        # 服务层以 None 表示 both
+        if platform == "both":
+            platform = None
+
+        if poster_agent_id is not None:
+            try:
+                poster_agent_id = int(poster_agent_id)
+            except (TypeError, ValueError):
+                return jsonify({
+                    "success": False,
+                    "error": t('api.requireAgentId')
+                }), 400
+
+        result = SimulationRunner.inject_event(
+            simulation_id=simulation_id,
+            content=content,
+            platform=platform,
+            poster_agent_id=poster_agent_id,
+            label=label,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": result
+        })
+
+    except ValueError as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 400
+    except Exception as e:
+        logger.error(f"注入干预失败: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc() if Config.DEBUG else None
+        }), 500
+
+
 @simulation_bp.route('/interview', methods=['POST'])
 def interview_agent():
     """

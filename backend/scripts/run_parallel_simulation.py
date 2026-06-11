@@ -8,6 +8,8 @@ OASIS 双平台并行模拟预设脚本
 - 支持通过IPC接收Interview命令
 - 支持单个Agent采访和批量采访
 - 支持远程关闭环境命令
+- 动态事件注入（定时事件 + "上帝视角"实时干预），在模拟运行/等待阶段
+  将突发新闻、政策变量等作为帖子注入环境，影响后续群体演化
 
 使用方式:
     python run_parallel_simulation.py --config simulation_config.json
@@ -156,6 +158,7 @@ def init_logging_for_simulation(simulation_dir: str):
 
 
 from action_logger import SimulationLogManager, PlatformActionLogger
+from simulation_events import select_due_events, drain_pending_interventions
 
 try:
     from camel.models import ModelFactory
@@ -599,6 +602,37 @@ class ParallelIPCHandler:
         else:
             self.send_response(command_id, "failed", error=f"未知命令类型: {command_type}")
             return True
+
+    async def inject_pending_interventions(self) -> int:
+        """
+        排空并注入两个平台的待处理实时干预（持久化等待阶段使用）。
+
+        让"上帝视角"干预在模拟循环结束、环境仍存活的等待阶段同样生效。
+        """
+        total = 0
+        for platform, env, agent_graph in (
+            ("twitter", self.twitter_env, self.twitter_agent_graph),
+            ("reddit", self.reddit_env, self.reddit_agent_graph),
+        ):
+            if not env or not agent_graph:
+                continue
+            for rec in drain_pending_interventions(self.simulation_dir, platform):
+                content = (rec.get("content") or "").strip()
+                if not content:
+                    continue
+                agent_id, agent = _resolve_poster(agent_graph, rec.get("poster_agent_id"))
+                if agent is None:
+                    continue
+                try:
+                    await env.step({agent: ManualAction(
+                        action_type=ActionType.CREATE_POST,
+                        action_args={"content": content},
+                    )})
+                    total += 1
+                    print(f"  [{platform}] 已注入实时干预: agent={agent_id} 「{content[:40]}」")
+                except Exception as e:
+                    print(f"  [{platform}] 注入干预失败: {e}")
+        return total
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -1098,6 +1132,147 @@ class PlatformSimulation:
         self.total_actions = 0
 
 
+def _resolve_poster(agent_graph, poster_agent_id):
+    """
+    解析发帖 agent：优先使用指定 id，失败则回退到任意可用 agent。
+
+    Returns:
+        (agent_id, agent) 或 (None, None)
+    """
+    if poster_agent_id is not None:
+        try:
+            return poster_agent_id, agent_graph.get_agent(poster_agent_id)
+        except Exception:
+            pass
+    try:
+        for agent_id, agent in agent_graph.get_agents():
+            return agent_id, agent
+    except Exception:
+        pass
+    return None, None
+
+
+def _max_rowid(db_path: str) -> Optional[int]:
+    """读取 trace 表当前最大 rowid（用于在显式记录注入动作后推进 last_rowid）。"""
+    if not os.path.exists(db_path):
+        return None
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute("SELECT MAX(rowid) FROM trace").fetchone()
+            return row[0] if row and row[0] is not None else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+async def inject_dynamic_events(
+    env,
+    agent_graph,
+    platform: str,
+    config: Dict[str, Any],
+    simulation_dir: str,
+    round_num: int,
+    simulated_hour: int,
+    fired_event_ids: set,
+    db_path: str,
+    last_rowid: int,
+    action_logger=None,
+    agent_names: Optional[Dict[int, str]] = None,
+    log_info=None,
+) -> Tuple[int, int]:
+    """
+    在一轮开始时注入定时事件与实时干预（"上帝视角"干预）。
+
+    复用与 ``initial_posts`` 完全相同的 ``ManualAction(CREATE_POST)`` 注入方式，
+    把事件作为帖子发布到运行中的环境，使其在本轮对 agent 可见。
+
+    注入的动作会写入 OASIS 数据库；为避免随后 ``fetch_new_actions_from_db`` 把它们
+    再记录一次（重复计数），本函数在显式记录后将 ``last_rowid`` 推进到注入动作之后。
+
+    Returns:
+        ``(injected_count, new_last_rowid)`` —— new_last_rowid 已跳过本次注入的动作行。
+    """
+    agent_names = agent_names or {}
+
+    # 1) 收集本轮待注入项（定时事件 + 实时干预）
+    items: List[Dict[str, Any]] = []
+
+    scheduled = (config.get("event_config", {}) or {}).get("scheduled_events", [])
+    for ev_id, ev in select_due_events(
+        scheduled, round_num, simulated_hour, fired_event_ids, platform=platform
+    ):
+        fired_event_ids.add(ev_id)
+        items.append({
+            "content": ev.get("content", ""),
+            "poster_agent_id": ev.get("poster_agent_id"),
+            "source": "scheduled_event",
+            "label": ev.get("description") or ev.get("label") or "",
+        })
+
+    for rec in drain_pending_interventions(simulation_dir, platform):
+        items.append({
+            "content": rec.get("content", ""),
+            "poster_agent_id": rec.get("poster_agent_id"),
+            "source": "intervention",
+            "label": rec.get("label", ""),
+        })
+
+    if not items:
+        return 0, last_rowid
+
+    # 2) 逐条注入。每条单独 env.step，避免多条帖子映射到同一 agent 时
+    #    动作字典 key 冲突而互相覆盖。
+    injected = 0
+    for item in items:
+        content = (item.get("content") or "").strip()
+        if not content:
+            continue
+
+        agent_id, agent = _resolve_poster(agent_graph, item.get("poster_agent_id"))
+        if agent is None:
+            if log_info:
+                log_info(f"注入失败({item['source']}): 无可用 agent")
+            continue
+
+        try:
+            await env.step({agent: ManualAction(
+                action_type=ActionType.CREATE_POST,
+                action_args={"content": content},
+            )})
+        except Exception as e:
+            if log_info:
+                log_info(f"注入失败({item['source']}): {e}")
+            continue
+
+        if action_logger:
+            action_logger.log_action(
+                round_num=round_num,
+                agent_id=agent_id,
+                agent_name=agent_names.get(agent_id, f"Agent_{agent_id}"),
+                action_type="CREATE_POST",
+                action_args={
+                    "content": content,
+                    "injected_by": item["source"],
+                    "label": item["label"],
+                },
+            )
+        injected += 1
+        label = f" [{item['label']}]" if item["label"] else ""
+        if log_info:
+            log_info(f"已注入{item['source']}{label}: agent={agent_id} 「{content[:40]}」")
+
+    # 3) 推进 last_rowid，跳过刚刚显式记录的注入动作，避免后续 fetch 重复计数
+    new_last_rowid = last_rowid
+    if injected > 0:
+        max_rid = _max_rowid(db_path)
+        if max_rid is not None and max_rid > new_last_rowid:
+            new_last_rowid = max_rid
+
+    return injected, new_last_rowid
+
+
 async def run_twitter_simulation(
     config: Dict[str, Any], 
     simulation_dir: str,
@@ -1148,6 +1323,7 @@ async def run_twitter_simulation(
         if agent_id not in agent_names:
             agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
     
+    _platform = "twitter"  # 用于动态事件/干预注入的平台标识
     db_path = os.path.join(simulation_dir, "twitter_simulation.db")
     if os.path.exists(db_path):
         os.remove(db_path)
@@ -1224,41 +1400,61 @@ async def run_twitter_simulation(
             log_info(f"轮数已截断: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
     
     start_time = datetime.now()
-    
+    fired_event_ids = set()  # 已触发的定时事件 id，避免重复注入
+
     for round_num in range(total_rounds):
         # 检查是否收到退出信号
         if _shutdown_event and _shutdown_event.is_set():
             if main_logger:
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
             break
-        
+
         simulated_minutes = round_num * minutes_per_round
         simulated_hour = (simulated_minutes // 60) % 24
         simulated_day = simulated_minutes // (60 * 24) + 1
-        
+
         active_agents = get_active_agents_for_round(
             result.env, config, simulated_hour, round_num
         )
-        
+
         # 无论是否有活跃agent，都记录round开始
         if action_logger:
             action_logger.log_round_start(round_num + 1, simulated_hour)
-        
+
+        # 注入动态事件（定时事件 + 实时干预）—— "上帝视角"干预
+        # 在 agent 行动前注入，使新帖子在本轮对 agent 可见
+        injected_count, last_rowid = await inject_dynamic_events(
+            env=result.env,
+            agent_graph=result.agent_graph,
+            platform=_platform,
+            config=config,
+            simulation_dir=simulation_dir,
+            round_num=round_num + 1,
+            simulated_hour=simulated_hour,
+            fired_event_ids=fired_event_ids,
+            db_path=db_path,
+            last_rowid=last_rowid,
+            action_logger=action_logger,
+            agent_names=agent_names,
+            log_info=log_info,
+        )
+        total_actions += injected_count
+
         if not active_agents:
-            # 没有活跃agent时也记录round结束（actions_count=0）
+            # 没有活跃agent时也记录round结束（仅含注入的动作）
             if action_logger:
-                action_logger.log_round_end(round_num + 1, 0)
+                action_logger.log_round_end(round_num + 1, injected_count)
             continue
-        
+
         actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
-        
+
         # 从数据库获取实际执行的动作并记录
         actual_actions, last_rowid = fetch_new_actions_from_db(
             db_path, last_rowid, agent_names
         )
-        
-        round_action_count = 0
+
+        round_action_count = injected_count
         for action_data in actual_actions:
             if action_logger:
                 action_logger.log_action(
@@ -1339,6 +1535,7 @@ async def run_reddit_simulation(
         if agent_id not in agent_names:
             agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
     
+    _platform = "reddit"  # 用于动态事件/干预注入的平台标识
     db_path = os.path.join(simulation_dir, "reddit_simulation.db")
     if os.path.exists(db_path):
         os.remove(db_path)
@@ -1423,41 +1620,61 @@ async def run_reddit_simulation(
             log_info(f"轮数已截断: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
     
     start_time = datetime.now()
-    
+    fired_event_ids = set()  # 已触发的定时事件 id，避免重复注入
+
     for round_num in range(total_rounds):
         # 检查是否收到退出信号
         if _shutdown_event and _shutdown_event.is_set():
             if main_logger:
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
             break
-        
+
         simulated_minutes = round_num * minutes_per_round
         simulated_hour = (simulated_minutes // 60) % 24
         simulated_day = simulated_minutes // (60 * 24) + 1
-        
+
         active_agents = get_active_agents_for_round(
             result.env, config, simulated_hour, round_num
         )
-        
+
         # 无论是否有活跃agent，都记录round开始
         if action_logger:
             action_logger.log_round_start(round_num + 1, simulated_hour)
-        
+
+        # 注入动态事件（定时事件 + 实时干预）—— "上帝视角"干预
+        # 在 agent 行动前注入，使新帖子在本轮对 agent 可见
+        injected_count, last_rowid = await inject_dynamic_events(
+            env=result.env,
+            agent_graph=result.agent_graph,
+            platform=_platform,
+            config=config,
+            simulation_dir=simulation_dir,
+            round_num=round_num + 1,
+            simulated_hour=simulated_hour,
+            fired_event_ids=fired_event_ids,
+            db_path=db_path,
+            last_rowid=last_rowid,
+            action_logger=action_logger,
+            agent_names=agent_names,
+            log_info=log_info,
+        )
+        total_actions += injected_count
+
         if not active_agents:
-            # 没有活跃agent时也记录round结束（actions_count=0）
+            # 没有活跃agent时也记录round结束（仅含注入的动作）
             if action_logger:
-                action_logger.log_round_end(round_num + 1, 0)
+                action_logger.log_round_end(round_num + 1, injected_count)
             continue
-        
+
         actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
-        
+
         # 从数据库获取实际执行的动作并记录
         actual_actions, last_rowid = fetch_new_actions_from_db(
             db_path, last_rowid, agent_names
         )
-        
-        round_action_count = 0
+
+        round_action_count = injected_count
         for action_data in actual_actions:
             if action_logger:
                 action_logger.log_action(
@@ -1598,6 +1815,7 @@ async def main():
         log_manager.info("=" * 60)
         log_manager.info("进入等待命令模式 - 环境保持运行")
         log_manager.info("支持的命令: interview, batch_interview, close_env")
+        log_manager.info("实时干预: 通过 interventions/ 队列注入帖子（突发新闻/政策变量等）")
         log_manager.info("=" * 60)
         
         # 创建IPC处理器
@@ -1616,6 +1834,8 @@ async def main():
                 should_continue = await ipc_handler.process_commands()
                 if not should_continue:
                     break
+                # 注入等待阶段收到的实时干预（突发新闻/政策变量等）
+                await ipc_handler.inject_pending_interventions()
                 # 使用 wait_for 替代 sleep，这样可以响应 shutdown_event
                 try:
                     await asyncio.wait_for(_shutdown_event.wait(), timeout=0.5)

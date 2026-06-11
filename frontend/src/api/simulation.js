@@ -177,6 +177,20 @@ export const interviewAgents = (data) => {
 }
 
 /**
+ * 注入"上帝视角"干预：向运行中的模拟动态注入一条帖子
+ * （突发新闻、政策变量、外部冲击等），影响后续群体演化
+ * @param {string} simulationId
+ * @param {Object} data - { content, platform?, poster_agent_id?, label? }
+ *   - content: 必填，注入的帖子正文
+ *   - platform: 可选，'twitter' | 'reddit' | 'both'（默认 both）
+ *   - poster_agent_id: 可选，发帖 agent；缺省由引擎选择
+ *   - label: 可选，备注标签
+ */
+export const injectIntervention = (simulationId, data) => {
+  return service.post(`/api/simulation/${simulationId}/intervention`, data)
+}
+
+/**
  * 获取历史模拟列表（带项目详情）
  * 用于首页历史项目展示
  * @param {number} limit - 返回数量限制
