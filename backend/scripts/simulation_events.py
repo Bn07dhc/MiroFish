@@ -221,3 +221,38 @@ def drain_pending_interventions(simulation_dir: str, platform: str) -> List[Dict
         records.append(record)
 
     return records
+
+
+def resolve_active_count(
+    n_candidates: int,
+    absolute_target: int,
+    active_fraction: float = 0.0,
+    multiplier: float = 1.0,
+    max_cap: int = 0,
+) -> int:
+    """
+    计算本轮应激活的 agent 数量（纯函数，便于测试）。
+
+    历史行为使用一个与人群规模无关的绝对值 ``absolute_target``（约 5-30），
+    导致在"大量 agent"场景下绝大多数个体从不发声、人群几乎静止。
+
+    引入 ``active_fraction`` 后，活跃规模可随候选人群规模等比增长：
+        frac_target = round(n_candidates * active_fraction * multiplier)
+        target      = max(absolute_target, frac_target)
+    再受 ``max_cap`` 上限保护（>0 时生效），避免一次性激活过多 agent 压垮 LLM。
+
+    - ``active_fraction <= 0`` 时退化为历史行为（仅用绝对值），保持向后兼容。
+    - 返回值始终被裁剪到 ``[0, n_candidates]``。
+    """
+    if n_candidates <= 0:
+        return 0
+
+    target = max(0, int(absolute_target))
+    if active_fraction and active_fraction > 0:
+        frac_target = int(round(n_candidates * active_fraction * max(0.0, multiplier)))
+        target = max(target, frac_target)
+
+    if max_cap and max_cap > 0:
+        target = min(target, int(max_cap))
+
+    return max(0, min(target, n_candidates))

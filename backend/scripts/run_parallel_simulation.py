@@ -83,6 +83,9 @@ from typing import Dict, Any, List, Optional, Tuple
 _shutdown_event = None
 _cleanup_done = False
 
+# 演练模式（--dry-run）：agent 执行随机脚本动作而非调用 LLM
+DRY_RUN = False
+
 # 添加 backend 目录到路径
 # 脚本固定位于 backend/scripts/ 目录
 _scripts_dir = os.path.dirname(os.path.abspath(__file__))
@@ -158,7 +161,11 @@ def init_logging_for_simulation(simulation_dir: str):
 
 
 from action_logger import SimulationLogManager, PlatformActionLogger
-from simulation_events import select_due_events, drain_pending_interventions
+from simulation_events import (
+    select_due_events,
+    drain_pending_interventions,
+    resolve_active_count,
+)
 
 try:
     from camel.models import ModelFactory
@@ -1015,6 +1022,119 @@ def _get_comment_info(
     return None
 
 
+def enable_dry_run_mode():
+    """
+    启用演练模式所需的离线环境：
+
+    1. 安装一个轻量的 tiktoken 编码桩 —— 演练模式下 agent 永不真正调用 LLM，
+       token 计数无意义，但 camel 在创建模型对象时会尝试联网下载 BPE 词表。
+       桩实现避免该网络依赖，使演练可在完全离线/无 API Key 的环境运行。
+    2. 若未配置 API Key，则注入占位 Key，让 ModelFactory 能创建模型对象
+       （该对象仅被持有、不会被调用）。
+    """
+    try:
+        import tiktoken
+
+        class _DryRunEncoding:
+            """近似 token 计数：约每 4 字符 1 token（仅用于无关紧要的统计）。"""
+            def encode(self, text, *args, **kwargs):
+                try:
+                    return list(range(max(1, len(text) // 4)))
+                except Exception:
+                    return [0]
+
+            def decode(self, tokens, *args, **kwargs):
+                return ""
+
+        tiktoken.get_encoding = lambda *a, **k: _DryRunEncoding()
+        tiktoken.encoding_for_model = lambda *a, **k: _DryRunEncoding()
+    except ImportError:
+        pass
+
+    if not os.environ.get("LLM_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = "dry-run-dummy"
+        os.environ["LLM_API_KEY"] = "dry-run-dummy"
+
+
+# 演练模式下各平台可用于随机脚本动作的"廉价"动作（仅需简单参数）
+_DRY_RUN_POST_TEMPLATES = [
+    "关于这个话题，我的看法是：{topic}确实值得关注。",
+    "刚看到{topic}的最新进展，感觉影响不小。",
+    "不太认同主流对{topic}的解读，理由如下……",
+    "{topic}这件事，让我想到之前类似的情况。",
+    "支持！希望{topic}能有更多后续。",
+    "持保留态度，{topic}还需要更多信息。",
+]
+
+
+def make_dry_run_actions(active_agents, topic: str, recent_post_ids, round_num: int):
+    """
+    为演练模式构造一批随机脚本动作（ManualAction），不调用任何 LLM。
+
+    动作分布（近似真实社媒）：
+      - ~55% CREATE_POST（围绕话题的模板文案）
+      - ~25% LIKE_POST（点赞一条已存在的帖子，若有）
+      - ~20% DO_NOTHING
+
+    Args:
+        active_agents: [(agent_id, agent), ...]
+        topic: 话题关键词，用于填充帖子模板
+        recent_post_ids: 已存在的帖子 id 列表（用于点赞），可为空
+        round_num: 当前轮次（用于内容去重/可读性）
+
+    Returns:
+        {agent: ManualAction}
+    """
+    actions = {}
+    for agent_id, agent in active_agents:
+        roll = random.random()
+        if roll < 0.55 or not recent_post_ids:
+            template = random.choice(_DRY_RUN_POST_TEMPLATES)
+            content = template.format(topic=topic)
+            content = f"[r{round_num}] {content}"
+            actions[agent] = ManualAction(
+                action_type=ActionType.CREATE_POST,
+                action_args={"content": content},
+            )
+        elif roll < 0.80 and recent_post_ids:
+            actions[agent] = ManualAction(
+                action_type=ActionType.LIKE_POST,
+                action_args={"post_id": random.choice(recent_post_ids)},
+            )
+        else:
+            actions[agent] = ManualAction(action_type=ActionType.DO_NOTHING, action_args={})
+    return actions
+
+
+def _derive_dry_topic(config: Dict[str, Any]) -> str:
+    """从配置中推导演练用话题关键词（用于填充随机帖子模板）。"""
+    event_config = config.get("event_config", {}) or {}
+    topics = event_config.get("hot_topics") or []
+    if topics:
+        return str(topics[0])
+    req = config.get("simulation_requirement", "")
+    if req:
+        return str(req)[:30]
+    return "该热点事件"
+
+
+def _fetch_recent_post_ids(db_path: str, limit: int = 200):
+    """读取最近的帖子 id（演练模式下用于随机点赞）。"""
+    if not os.path.exists(db_path):
+        return []
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT post_id FROM post ORDER BY post_id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
 def create_model(config: Dict[str, Any], use_boost: bool = False):
     """
     创建LLM模型
@@ -1093,25 +1213,33 @@ def get_active_agents_for_round(
         multiplier = time_config.get("off_peak_activity_multiplier", 0.3)
     else:
         multiplier = 1.0
-    
-    target_count = int(random.uniform(base_min, base_max) * multiplier)
-    
+
+    # 先筛选出本时段愿意发声的候选 agent
     candidates = []
     for cfg in agent_configs:
         agent_id = cfg.get("agent_id", 0)
         active_hours = cfg.get("active_hours", list(range(8, 23)))
         activity_level = cfg.get("activity_level", 0.5)
-        
+
         if current_hour not in active_hours:
             continue
-        
+
         if random.random() < activity_level:
             candidates.append(agent_id)
-    
-    selected_ids = random.sample(
-        candidates, 
-        min(target_count, len(candidates))
-    ) if candidates else []
+
+    # 计算本轮激活数量。
+    # active_fraction>0 时活跃规模随人群规模等比增长（大规模场景下人群不再静止）；
+    # 否则退化为历史的绝对值行为，保持向后兼容。
+    absolute_target = int(random.uniform(base_min, base_max) * multiplier)
+    target_count = resolve_active_count(
+        n_candidates=len(candidates),
+        absolute_target=absolute_target,
+        active_fraction=time_config.get("active_fraction", 0.0),
+        multiplier=multiplier,
+        max_cap=time_config.get("max_active_per_round", 0),
+    )
+
+    selected_ids = random.sample(candidates, target_count) if candidates else []
     
     active_agents = []
     for agent_id in selected_ids:
@@ -1324,6 +1452,7 @@ async def run_twitter_simulation(
             agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
     
     _platform = "twitter"  # 用于动态事件/干预注入的平台标识
+    _dry_topic = _derive_dry_topic(config)  # 演练模式帖子话题
     db_path = os.path.join(simulation_dir, "twitter_simulation.db")
     if os.path.exists(db_path):
         os.remove(db_path)
@@ -1446,7 +1575,12 @@ async def run_twitter_simulation(
                 action_logger.log_round_end(round_num + 1, injected_count)
             continue
 
-        actions = {agent: LLMAction() for _, agent in active_agents}
+        if DRY_RUN:
+            # 演练模式：随机脚本动作，不调用 LLM
+            recent_ids = _fetch_recent_post_ids(db_path)
+            actions = make_dry_run_actions(active_agents, _dry_topic, recent_ids, round_num + 1)
+        else:
+            actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
 
         # 从数据库获取实际执行的动作并记录
@@ -1536,6 +1670,7 @@ async def run_reddit_simulation(
             agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
     
     _platform = "reddit"  # 用于动态事件/干预注入的平台标识
+    _dry_topic = _derive_dry_topic(config)  # 演练模式帖子话题
     db_path = os.path.join(simulation_dir, "reddit_simulation.db")
     if os.path.exists(db_path):
         os.remove(db_path)
@@ -1666,7 +1801,12 @@ async def run_reddit_simulation(
                 action_logger.log_round_end(round_num + 1, injected_count)
             continue
 
-        actions = {agent: LLMAction() for _, agent in active_agents}
+        if DRY_RUN:
+            # 演练模式：随机脚本动作，不调用 LLM
+            recent_ids = _fetch_recent_post_ids(db_path)
+            actions = make_dry_run_actions(active_agents, _dry_topic, recent_ids, round_num + 1)
+        else:
+            actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
 
         # 从数据库获取实际执行的动作并记录
@@ -1736,12 +1876,24 @@ async def main():
         default=False,
         help='模拟完成后立即关闭环境，不进入等待命令模式'
     )
-    
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        default=False,
+        help='演练模式：agent 执行随机脚本动作而不调用 LLM，'
+             '用于在不消耗 API 额度的情况下大规模验证模拟流程是否正常'
+    )
+
     args = parser.parse_args()
-    
+
     # 在 main 函数开始时创建 shutdown 事件，确保整个程序都能响应退出信号
-    global _shutdown_event
+    global _shutdown_event, DRY_RUN
     _shutdown_event = asyncio.Event()
+
+    # 演练模式：安装离线 token 计数桩 + 占位 API Key（agent 永不真正调用 LLM）
+    if args.dry_run:
+        DRY_RUN = True
+        enable_dry_run_mode()
     
     if not os.path.exists(args.config):
         print(f"错误: 配置文件不存在: {args.config}")

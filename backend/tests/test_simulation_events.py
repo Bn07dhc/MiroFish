@@ -159,3 +159,40 @@ def test_queue_writes_atomically_no_tmp_left(tmp_path):
 
 def test_drain_missing_dir_returns_empty(tmp_path):
     assert se.drain_pending_interventions(str(tmp_path), "twitter") == []
+
+
+# ----------------------- resolve_active_count -----------------------
+
+def test_resolve_active_count_legacy_ignores_population():
+    # active_fraction=0 -> 仅用绝对值，与人群规模无关（历史行为）
+    assert se.resolve_active_count(1000, absolute_target=15, active_fraction=0.0) == 15
+    assert se.resolve_active_count(50, absolute_target=15, active_fraction=0.0) == 15
+
+
+def test_resolve_active_count_scales_with_population():
+    # active_fraction>0 -> 随候选人群规模等比增长
+    assert se.resolve_active_count(1000, absolute_target=15, active_fraction=0.10) == 100
+    assert se.resolve_active_count(200, absolute_target=15, active_fraction=0.10) == 20
+
+
+def test_resolve_active_count_takes_max_of_absolute_and_fraction():
+    # 比例值低于绝对值时，取绝对值（保证最低活跃量）
+    assert se.resolve_active_count(50, absolute_target=15, active_fraction=0.10) == 15
+
+
+def test_resolve_active_count_applies_multiplier():
+    assert se.resolve_active_count(100, absolute_target=0, active_fraction=0.20, multiplier=1.5) == 30
+    assert se.resolve_active_count(100, absolute_target=0, active_fraction=0.20, multiplier=0.3) == 6
+
+
+def test_resolve_active_count_respects_max_cap():
+    assert se.resolve_active_count(1000, absolute_target=15, active_fraction=0.50, max_cap=120) == 120
+
+
+def test_resolve_active_count_never_exceeds_candidates():
+    assert se.resolve_active_count(10, absolute_target=50, active_fraction=0.0) == 10
+    assert se.resolve_active_count(10, absolute_target=5, active_fraction=2.0) == 10
+
+
+def test_resolve_active_count_zero_candidates():
+    assert se.resolve_active_count(0, absolute_target=15, active_fraction=0.2) == 0
