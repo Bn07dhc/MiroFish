@@ -1172,19 +1172,48 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     # 如果 .env 中没有模型名，则使用 config 作为备用
     if not llm_model:
         llm_model = config.get("llm_model", "gpt-4o-mini")
-    
+
+    # 选择服务商：openai（默认，OpenAI 兼容）或 anthropic
+    # 优先级：显式 LLM_PROVIDER > base_url 含 anthropic > 仅配置了 ANTHROPIC_API_KEY
+    provider = (os.environ.get("LLM_PROVIDER", "") or "").strip().lower()
+    if not provider:
+        if "anthropic" in (llm_base_url or "").lower():
+            provider = "anthropic"
+        elif os.environ.get("ANTHROPIC_API_KEY") and not llm_api_key:
+            provider = "anthropic"
+        else:
+            provider = "openai"
+
+    if provider == "anthropic":
+        anthropic_key = llm_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        if anthropic_key:
+            os.environ["ANTHROPIC_API_KEY"] = anthropic_key
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ValueError(
+                "缺少 ANTHROPIC_API_KEY 配置，请在 .env 中设置 LLM_API_KEY（provider=anthropic）"
+                "或 ANTHROPIC_API_KEY"
+            )
+        # Anthropic 默认模型回退（避免 OpenAI 的 gpt 默认值）
+        if not llm_model or llm_model.startswith("gpt"):
+            llm_model = os.environ.get("LLM_MODEL_NAME") or "claude-haiku-4-5-20251001"
+        print(f"{config_label}[anthropic] model={llm_model}")
+        return ModelFactory.create(
+            model_platform=ModelPlatformType.ANTHROPIC,
+            model_type=llm_model,
+        )
+
     # 设置 camel-ai 所需的环境变量
     if llm_api_key:
         os.environ["OPENAI_API_KEY"] = llm_api_key
-    
+
     if not os.environ.get("OPENAI_API_KEY"):
         raise ValueError("缺少 API Key 配置，请在项目根目录 .env 文件中设置 LLM_API_KEY")
-    
+
     if llm_base_url:
         os.environ["OPENAI_API_BASE_URL"] = llm_base_url
-    
+
     print(f"{config_label} model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else '默认'}...")
-    
+
     return ModelFactory.create(
         model_platform=ModelPlatformType.OPENAI,
         model_type=llm_model,

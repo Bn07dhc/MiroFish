@@ -15,8 +15,9 @@ dependencies = [
     # 生产级 WSGI 服务器（跨平台，单进程多线程，契合应用的进程内状态模型）
     "waitress>=3.0.2",
 
-    # LLM 相关
+    # LLM 相关（openai 兼容 + anthropic 原生）
     "openai>=1.0.0",
+    "anthropic>=0.109.1",
 
     # Zep Cloud
     "zep-cloud==3.13.0",
