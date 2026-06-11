@@ -32,16 +32,24 @@ def main():
             print(f"  - {err}")
         print("\n请检查 .env 文件中的配置")
         sys.exit(1)
-    
+
     # 创建应用
     app = create_app()
-    
+
     # 获取运行配置
     host = os.environ.get('FLASK_HOST', '0.0.0.0')
     port = int(os.environ.get('FLASK_PORT', 5001))
     debug = Config.DEBUG
-    
-    # 启动服务
+
+    if not debug:
+        # 非 DEBUG 模式提示使用生产级 WSGI 服务器
+        print(
+            "提示: 当前为非 DEBUG 模式。生产环境推荐使用 waitress 启动：\n"
+            "  waitress-serve --host=0.0.0.0 --port=5001 --threads=8 wsgi:app\n"
+            "  （或 `python wsgi.py`）"
+        )
+
+    # 启动服务（开发用 Flask 内置服务器；生产请使用 wsgi.py）
     app.run(host=host, port=port, debug=debug, threaded=True)
 
 
