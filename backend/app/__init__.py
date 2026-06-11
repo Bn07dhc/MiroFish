@@ -39,8 +39,16 @@ def create_app(config_class=Config):
         logger.info("MiroFish Backend 启动中...")
         logger.info("=" * 50)
     
-    # 启用CORS
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # 启用CORS（来源可通过 CORS_ORIGINS 环境变量配置）
+    cors_origins = app.config.get('CORS_ORIGINS', ['*'])
+    CORS(app, resources={r"/api/*": {"origins": cors_origins}})
+    if should_log_startup:
+        logger.info(f"CORS 允许来源: {cors_origins}")
+
+    # 生产环境配置警告
+    if should_log_startup:
+        for warn in config_class.production_warnings():
+            logger.warning(f"[安全警告] {warn}")
     
     # 注册模拟进程清理函数（确保服务器关闭时终止所有模拟进程）
     from .services.simulation_runner import SimulationRunner
@@ -72,9 +80,34 @@ def create_app(config_class=Config):
     @app.route('/health')
     def health():
         return {'status': 'ok', 'service': 'MiroFish Backend'}
-    
+
+    # 统一的 JSON 错误处理（避免在生产环境向客户端泄露堆栈信息）
+    from flask import jsonify
+    from werkzeug.exceptions import HTTPException
+
+    @app.errorhandler(HTTPException)
+    def handle_http_exception(e):
+        return jsonify({
+            "success": False,
+            "error": e.description,
+            "code": e.code,
+        }), e.code
+
+    @app.errorhandler(Exception)
+    def handle_unexpected_exception(e):
+        # 完整堆栈仅记录到服务端日志，不返回给客户端（除非开启 DEBUG）
+        import traceback
+        get_logger('mirofish').error(f"未处理异常: {e}\n{traceback.format_exc()}")
+        payload = {
+            "success": False,
+            "error": str(e) if app.config.get('DEBUG') else "Internal Server Error",
+        }
+        if app.config.get('DEBUG'):
+            payload["traceback"] = traceback.format_exc()
+        return jsonify(payload), 500
+
     if should_log_startup:
         logger.info("MiroFish Backend 启动完成")
-    
+
     return app
 

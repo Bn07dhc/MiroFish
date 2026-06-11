@@ -176,6 +176,23 @@ Reads `.env` from root directory by default, maps ports `3000 (frontend) / 5001 
 
 > Mirror address for faster pulling is provided as comments in `docker-compose.yml`, replace if needed.
 
+### Production Notes
+
+The Docker image and `npm run start` run MiroFish in **production mode** (the backend is served by the [waitress](https://github.com/Pylons/waitress) WSGI server and the frontend is served from a minified build), while `npm run dev` keeps hot‑reload for local development.
+
+For a hardened deployment, set the following in `.env`:
+
+```env
+# Disable debug mode (default; never enable in production)
+FLASK_DEBUG=false
+# A random secret key for Flask sessions
+SECRET_KEY=<a-long-random-string>
+# Restrict CORS to your frontend origin(s), comma-separated
+CORS_ORIGINS=https://your-frontend.example.com
+```
+
+> The backend keeps task/simulation state in process memory, so it must run as a **single process with multiple threads** (the provided configuration already does this — do not scale it to multiple workers/replicas).
+
 ## 📬 Join the Conversation
 
 <div align="center">

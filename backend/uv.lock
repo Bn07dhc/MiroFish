@@ -25,6 +25,25 @@ wheels = [
 ]
 
 [[package]]
+name = "anthropic"
+version = "0.109.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "docstring-parser" },
+    { name = "httpx" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/0b/ce24a4f275573f5e436ca954faca60c759d58ed152b8fa36a1e3b888e261/anthropic-0.109.1.tar.gz", hash = "sha256:83e06b3d9d40ff5898f588020e0cc4e42187de954549a3b5fbe6e2685a09c785", size = 927569, upload-time = "2026-06-09T23:55:24.884Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/0f/a6110d713370bc92f074a622f8a5ebdec7e92360149b1048dca258a07b2f/anthropic-0.109.1-py3-none-any.whl", hash = "sha256:ce7d94a7657f2aa29338cca448945eac621b4f62c1794cf461cb32847223e9b8", size = 923851, upload-time = "2026-06-09T23:55:23.348Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1242,6 +1261,7 @@ name = "mirofish-backend"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anthropic" },
     { name = "camel-ai" },
     { name = "camel-oasis" },
     { name = "chardet" },
@@ -1252,6 +1272,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pymupdf" },
     { name = "python-dotenv" },
+    { name = "waitress" },
     { name = "zep-cloud" },
 ]
 
@@ -1270,6 +1291,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anthropic", specifier = ">=0.109.1" },
     { name = "camel-ai", specifier = "==0.2.78" },
     { name = "camel-oasis", specifier = "==0.2.5" },
     { name = "chardet", specifier = ">=5.0.0" },
@@ -1283,6 +1305,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "waitress", specifier = ">=3.0.2" },
     { name = "zep-cloud", specifier = "==3.13.0" },
 ]
 provides-extras = ["dev"]
@@ -3322,6 +3345,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/20/28/e6f1a6f655d620846bd9df527390ecc26b3805a0c5989048c210e22c5ca9/virtualenv-20.35.4.tar.gz", hash = "sha256:643d3914d73d3eeb0c552cbb12d7e82adf0e504dbf86a3182f8771a153a1971c", size = 6028799, upload-time = "2025-10-29T06:57:40.511Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/79/0c/c05523fa3181fdf0c9c52a6ba91a23fbf3246cc095f26f6516f9c60e6771/virtualenv-20.35.4-py3-none-any.whl", hash = "sha256:c21c9cede36c9753eeade68ba7d523529f228a403463376cf821eaae2b650f1b", size = 6005095, upload-time = "2025-10-29T06:57:37.598Z" },
+]
+
+[[package]]
+name = "waitress"
+version = "3.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/cb/04ddb054f45faa306a230769e868c28b8065ea196891f09004ebace5b184/waitress-3.0.2.tar.gz", hash = "sha256:682aaaf2af0c44ada4abfb70ded36393f0e307f4ab9456a215ce0020baefc31f", size = 179901, upload-time = "2024-11-16T20:02:35.195Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/57/a27182528c90ef38d82b636a11f606b0cbb0e17588ed205435f8affe3368/waitress-3.0.2-py3-none-any.whl", hash = "sha256:c56d67fd6e87c2ee598b76abdd4e96cfad1f24cacdea5078d382b1f9d7b5ed2e", size = 56232, upload-time = "2024-11-16T20:02:33.858Z" },
 ]
 
 [[package]]
